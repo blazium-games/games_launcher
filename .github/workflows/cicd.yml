@@ -13,7 +13,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Packaging files
         run: |
@@ -44,6 +44,7 @@ jobs:
             platform: windows
             editor: blazium.windows.editor.x86_64.exe
             template: blazium.windows.template_release.x86_64.exe
+            template_alt: blazium.windows.template_release.x86_64.blazium.exe
             preset: Windows Desktop
             out: export/BlaziumGames.exe
             chauffeur_platform: windows-amd64
@@ -52,13 +53,14 @@ jobs:
             platform: linuxbsd
             editor: blazium.linuxbsd.editor.x86_64
             template: blazium.linuxbsd.template_release.x86_64
+            template_alt: blazium.linuxbsd.template_release.x86_64.blazium
             preset: Linux
             out: export/BlaziumGames
             chauffeur_platform: linux-amd64
             chauffeur_name: chauffeur
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Require module read token
         shell: bash
@@ -78,6 +80,7 @@ jobs:
           sudo apt-get install -y libx11-6 libxcursor1 libxinerama1 libxi6 libxrandr2 libgl1 libasound2 unzip
 
       - name: Download games_module templates
+        id: host
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GAMES_MODULE_READ_TOKEN }}
@@ -85,32 +88,38 @@ jobs:
           set -euo pipefail
           tag="$(gh release list --repo blazium-games/games_module --limit 30 --json tagName,isDraft --jq '.[] | select(.isDraft==false) | .tagName' | grep '^templates-' | head -n 1 || true)"
           if [ -z "$tag" ]; then
-            echo "No templates-* release on blazium-games/games_module." >&2
-            exit 1
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No templates-* release on blazium-games/games_module. Skipping ${{ matrix.platform }}."
+            exit 0
           fi
           echo "Using ${tag}"
-          mkdir -p .ci/host templates
+          mkdir -p .ci/host templates .ci/editor
           gh release download "$tag" --repo blazium-games/games_module --dir .ci/host --clobber
-          editor="$(find .ci/host -type f -name '${{ matrix.editor }}' | head -n 1)"
-          template="$(find .ci/host -type f -name '${{ matrix.template }}' | head -n 1)"
-          test -n "$editor"
-          test -n "$template"
-          mkdir -p .ci/editor
+          editor="$(find .ci/host -type f \( -name '${{ matrix.editor }}' \) | head -n 1)"
+          template="$(find .ci/host -type f \( -name '${{ matrix.template }}' -o -name '${{ matrix.template_alt }}' \) | head -n 1)"
+          if [ -z "$editor" ] || [ -z "$template" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Release ${tag} has no ${{ matrix.editor }} or template for ${{ matrix.platform }}. Skipping this platform."
+            exit 0
+          fi
           cp "$editor" ".ci/editor/${{ matrix.editor }}"
           cp "$template" "templates/${{ matrix.template }}"
           chmod +x ".ci/editor/${{ matrix.editor }}" "templates/${{ matrix.template }}" || true
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Download chauffeur
+        if: steps.host.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p export .ci/chauffeur
           curl -fsSL -o .ci/chauffeur/archive "https://cdn.blazium.online/tools/chauffeur/${{ matrix.chauffeur_platform }}/latest/archive/default"
-          unzip -o .ci/chauffeur/archive -d .ci/chauffeur
+          python -c "import zipfile; zipfile.ZipFile(r'.ci/chauffeur/archive').extractall(r'.ci/chauffeur')"
           test -f ".ci/chauffeur/${{ matrix.chauffeur_name }}"
           cp ".ci/chauffeur/${{ matrix.chauffeur_name }}" "export/${{ matrix.chauffeur_name }}"
 
       - name: Export
+        if: steps.host.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -119,6 +128,7 @@ jobs:
           test -f "${{ matrix.out }}"
 
       - uses: actions/upload-artifact@v4
+        if: steps.host.outputs.ready == 'true'
         with:
           name: export-${{ matrix.platform }}
           path: export/**
@@ -128,7 +138,7 @@ jobs:
     needs: export
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           name: export-windows
@@ -185,12 +195,18 @@ jobs:
     needs: export
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
+        id: linux-export
+        continue-on-error: true
         with:
           name: export-linuxbsd
           path: export
+      - name: Linux export not in this release
+        if: steps.linux-export.outcome != 'success'
+        run: echo "Linux template was not in the games_module release. Skipping the deb."
       - name: Build deb
+        if: steps.linux-export.outcome == 'success'
         env:
           VERSION: "0.1.0"
           SOURCE_DIR: ${{ github.workspace }}/export
@@ -204,6 +220,7 @@ jobs:
           /tmp/nfpm package --config packaging/linux/nfpm.yaml --packager deb --target "dist/blazium-games_${VERSION}_amd64.deb"
           test -f "dist/blazium-games_${VERSION}_amd64.deb"
       - name: Sign deb when the key exists
+        if: steps.linux-export.outcome == 'success'
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
@@ -216,6 +233,7 @@ jobs:
           printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
           gpg --detach-sign --armor "dist/blazium-games_0.1.0_amd64.deb"
       - uses: actions/upload-artifact@v4
+        if: steps.linux-export.outcome == 'success'
         with:
           name: linux-installer
           path: dist/**
@@ -236,7 +254,12 @@ jobs:
         run: |
           set -euo pipefail
           tag="launcher-${GITHUB_SHA::12}"
-          gh release create "$tag" dist/** --repo "${GITHUB_REPOSITORY}" --title "Blazium Games launcher" --notes "Windows setup and Linux deb for ${GITHUB_SHA}."
+          mapfile -t files < <(find dist -type f)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No installers were produced."
+            exit 1
+          fi
+          gh release create "$tag" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Blazium Games launcher" --notes "Installer artifacts for ${GITHUB_SHA}."
       - name: Spaces upload when credentials exist
         env:
           DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}

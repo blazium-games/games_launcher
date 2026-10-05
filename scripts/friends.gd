@@ -56,6 +56,10 @@ func refresh() -> void:
 	for row in _rows(friends, ["requests", "incoming"]):
 		if row is Dictionary:
 			_request(row)
+	_section("Outgoing")
+	for row in _rows(friends, ["outgoing"]):
+		if row is Dictionary:
+			_box.add_child(_label("Waiting on %s" % str(row.get("username", ""))))
 	_section("Friends")
 	for row in _rows(friends, ["friends"]):
 		if row is Dictionary:
@@ -103,7 +107,49 @@ func _friend(row: Dictionary, _playing: Dictionary) -> void:
 		Shell.open_chat_friend(username)
 	)
 	line.add_child(chat)
+	var presence: Variant = row.get("presence", {})
+	var state := ""
+	var game_name := ""
+	if presence is Dictionary:
+		state = str(presence.get("state", ""))
+		var game: Variant = presence.get("game", {})
+		if game is Dictionary:
+			game_name = str(game.get("name", ""))
+	if state != "":
+		var where := game_name if game_name != "" else state
+		line.add_child(_label(where))
+	var invite := Button.new()
+	invite.text = "Invite"
+	invite.pressed.connect(func () -> void:
+		_invite(username)
+	)
+	line.add_child(invite)
 	_box.add_child(line)
+
+
+func _invite(username: String) -> void:
+	var games := Session.owned_games()
+	if games.is_empty():
+		_status.text = "You have no games to invite them to"
+		return
+	var pick := OptionButton.new()
+	for row in games:
+		if row is Dictionary:
+			pick.add_item(str(row.get("name", row.get("game_uid", ""))))
+			pick.set_item_metadata(pick.item_count - 1, str(row.get("game_uid", "")))
+	var send := Button.new()
+	send.text = "Send invite"
+	send.pressed.connect(func () -> void:
+		var uid := str(pick.get_item_metadata(pick.selected))
+		if uid.is_empty():
+			return
+		Confirm.ask("invite", "Invite this friend?", username, func () -> void:
+			IrcClient.send_invite(username, uid)
+			_status.text = "Invite sent"
+		)
+	)
+	_box.add_child(pick)
+	_box.add_child(send)
 
 
 func _section(title: String) -> void:

@@ -6,6 +6,8 @@ var _body: VBoxContainer
 var _poll: Timer
 var _poll_uid: String = ""
 var _polls: int = 0
+var _after_pay: Dictionary = {}
+var _install_uid: String = ""
 
 
 func _ready() -> void:
@@ -39,6 +41,8 @@ func _ready() -> void:
 	_poll.timeout.connect(_tick_top_up)
 	add_child(_poll)
 	Shell.navigate.connect(_show)
+	Session.login_url_ready.connect(_on_login_url)
+	Installs.progress.connect(_on_install_progress)
 	Session.authenticated.connect(func () -> void:
 		_show("home", {})
 	)
@@ -89,13 +93,22 @@ func _show(page: String, extra: Dictionary) -> void:
 			_status.text = page
 
 
+func _on_login_url(url: String) -> void:
+	if url.is_empty():
+		return
+	_status.text = url
+	_body.add_child(_line(url))
+
+
 func _login() -> void:
 	_status.text = "Sign in with your Blazium account"
+	if Session.login_url != "":
+		_body.add_child(_line(Session.login_url))
 	var button := Button.new()
 	button.text = "Sign in"
 	button.pressed.connect(func () -> void:
 		Session.start_login()
-		_status.text = "Continue in the browser"
+		_status.text = Session.login_url if Session.login_url != "" else "Continue in the browser"
 	)
 	_body.add_child(button)
 
@@ -105,11 +118,27 @@ func _home() -> void:
 		_login()
 		return
 	_status.text = "Blazium Games"
-	for kind in ["featured", "new", "updated"]:
-		_heading(kind.capitalize())
-		var shelf := Session.shelf(kind)
-		for row in _rows(shelf, ["games", "items"]):
+	var shelves := [
+		["featured", "Featured"],
+		["new", "New"],
+		["recently_updated", "Recently updated"],
+		["made_with_blazium", "Made with Blazium"],
+		["in_development", "In development"],
+		["browser_playable", "Play in your browser"],
+		["community", "From the community"],
+		["tools_and_assets", "Tools, mods and assets"],
+		["tonight", "Something for tonight"],
+		["unheard_of", "Unheard of"],
+	]
+	for item in shelves:
+		var shelf := Session.shelf(str(item[0]))
+		var rows := _rows(shelf, ["games", "items"])
+		if rows.is_empty():
+			continue
+		_heading(str(item[1]))
+		for row in rows:
 			if row is Dictionary:
+				Session.remember_owner(str(row.get("uid", row.get("game_uid", ""))), str(row.get("username", "")))
 				_game_row(row)
 
 
@@ -138,6 +167,7 @@ func _wallet() -> void:
 	button.pressed.connect(func () -> void:
 		var cents := int(amount.value)
 		Confirm.ask("top_up", "Add funds?", "This opens the live Checkout page.", func () -> void:
+			_after_pay = {}
 			var created := Session.create_top_up(cents)
 			var url := str(created.get("checkout_url", ""))
 			if url.is_empty():
@@ -179,9 +209,17 @@ func _search(query: String) -> void:
 
 func _listing(uid: String, launch_if_owned: bool) -> void:
 	var body := Session.overview(uid)
-	var name := str(body.get("name", uid))
+	Session.remember_owner(uid, str(_field(body, ["username", "developer"])))
+	var name := str(_field(body, ["name"]))
+	if name.is_empty():
+		name = uid
 	_status.text = name
-	_body.add_child(_line(str(body.get("summary", body.get("description", "")))))
+	var summary := str(_field(body, ["summary", "description", "tagline"]))
+	if summary != "":
+		_body.add_child(_line(summary))
+	_body.add_child(_line("Price %s" % _money(_int_field(body, ["price_cents"]))))
+	_editions(body)
+	_changelog(uid, body)
 	if Session.owns(uid):
 		_status.text = "%s — in your library" % name
 		if launch_if_owned and Installs.is_installed(uid):
@@ -196,12 +234,13 @@ func _listing(uid: String, launch_if_owned: bool) -> void:
 		_action("Buy", func () -> void:
 			Shell.show_checkout(uid)
 		)
-	_action("Review", func () -> void:
-		Shell.show_review(uid)
-	)
-	_action("Report a bug", func () -> void:
-		Shell.show_bug(uid)
-	)
+	if Session.may_write(uid):
+		_action("Review", func () -> void:
+			Shell.show_review(uid)
+		)
+		_action("Report a bug", func () -> void:
+			Shell.show_bug(uid)
+		)
 
 
 func _user(username: String) -> void:
@@ -214,6 +253,7 @@ func _user(username: String) -> void:
 
 func _install(uid: String, channel: String) -> void:
 	_status.text = "Installing"
+	_install_uid = uid
 	if not Session.owns(uid):
 		_status.text = "Buy this game before installing"
 		_action("Buy", func () -> void:
@@ -221,21 +261,22 @@ func _install(uid: String, channel: String) -> void:
 		)
 		return
 	var file_uid := Installs.pick_file(uid, channel)
-	var result := Installs.install_file(uid, file_uid)
+	var result: Dictionary = await Installs.install_file_with_progress(uid, file_uid)
 	_status.text = str(result.get("status", result.get("error", "Install failed")))
+
+
+func _on_install_progress(game_uid: String, received: int, total: int) -> void:
+	if game_uid != _install_uid:
+		return
+	if total > 0:
+		_status.text = "Downloading %s / %s" % [_bytes(received), _bytes(total)]
+	else:
+		_status.text = "Downloading %s" % _bytes(received)
 
 
 func _checkout(uid: String) -> void:
 	_status.text = "Checkout"
-	var quoted := Session.quote(uid, "purchase", 0)
-	_body.add_child(_line("Total %s cents" % int(quoted.get("total_cents", quoted.get("amount_cents", 0)))))
-	_action("Pay with balance", func () -> void:
-		var total := int(quoted.get("total_cents", quoted.get("amount_cents", 0)))
-		Confirm.ask("purchase", "Buy this game?", "This spends wallet balance.", func () -> void:
-			var result := Session.purchase(uid, "purchase", total, total, str(Time.get_unix_time_from_system()))
-			_status.text = "Purchased" if Session.ok(result) else _err(result)
-		)
-	)
+	_pay_panel(uid)
 
 
 func _play(uid: String) -> void:
@@ -253,10 +294,7 @@ func _play(uid: String) -> void:
 			Shell.open_chat_game(uid)
 		)
 	else:
-		_body.add_child(_line("You do not own this game yet."))
-		_action("Buy", func () -> void:
-			Shell.show_checkout(uid)
-		)
+		_pay_panel(uid)
 
 
 func _review(uid: String) -> void:
@@ -328,9 +366,158 @@ func _tick_top_up() -> void:
 	var body := Session.top_up(_poll_uid)
 	var state := str(body.get("status", ""))
 	_status.text = "Payment %s" % state
-	if state == "paid" or _polls > 40:
+	if state == "paid" and not _after_pay.is_empty() and not bool(_after_pay.get("bought", false)):
+		var game := str(_after_pay.get("game", ""))
+		if str(_after_pay.get("idem", "")).is_empty():
+			_after_pay["idem"] = str(Time.get_unix_time_from_system())
+		var result := Session.purchase(game, str(_after_pay.get("kind", "purchase")), int(_after_pay.get("amount", 0)), int(_after_pay.get("total", 0)), str(_after_pay.get("idem", "")))
+		if Session.ok(result):
+			_after_pay["bought"] = true
+		else:
+			_status.text = _err(result)
+	var game_uid := str(_after_pay.get("game", ""))
+	var bought := bool(_after_pay.get("bought", false))
+	var settled := state == "paid" and (_after_pay.is_empty() or Session.owns(game_uid) or (str(_after_pay.get("kind", "")) == "donation" and bought))
+	if settled or _polls > 40:
 		_poll.stop()
 		_poll_uid = ""
+		if game_uid != "":
+			Session.library()
+		if game_uid != "" and Session.owns(game_uid):
+			_after_pay = {}
+			Shell.show_page("library")
+		elif state == "paid":
+			_after_pay = {}
+
+
+func _pay_panel(uid: String) -> void:
+	var body := Session.overview(uid)
+	var price := _int_field(body, ["price_cents"])
+	var donations := _bool_field(body, ["donations_enabled"])
+	if price > 0:
+		_quote_actions(uid, "purchase", 0, "Buy this game?", "This spends wallet balance.")
+	elif body.is_empty():
+		_quote_actions(uid, "purchase", 0, "Buy this game?", "This spends wallet balance.")
+	elif not donations:
+		_body.add_child(_line("This game is free."))
+	if donations:
+		var amount := SpinBox.new()
+		amount.min_value = 100
+		amount.max_value = 50000
+		amount.step = 100
+		amount.value = 500
+		_body.add_child(amount)
+		_action("Quote donation", func () -> void:
+			_quote_actions(uid, "donation", int(amount.value), "Donate?", "This spends wallet balance and is not refundable.")
+		)
+
+
+func _quote_actions(uid: String, kind: String, amount: int, title: String, detail: String) -> void:
+	var quoted := Session.quote(uid, kind, amount)
+	if quoted.has("error"):
+		_body.add_child(_line(_err(quoted)))
+		return
+	var price := int(quoted.get("price_cents", amount))
+	var total := int(quoted.get("total_cents", price))
+	_body.add_child(_line("Total %s" % _money(total)))
+	_action("Pay with balance", func () -> void:
+		Confirm.ask(kind, title, detail, func () -> void:
+			var result := Session.purchase(uid, kind, price, total, str(Time.get_unix_time_from_system()))
+			if Session.ok(result):
+				Session.library()
+				if kind == "purchase" and Session.owns(uid):
+					Shell.show_page("library")
+				else:
+					_status.text = "Donation sent" if kind == "donation" else "Purchased"
+			else:
+				_status.text = _err(result)
+		)
+	)
+	_action("Pay by card", func () -> void:
+		Confirm.ask("top_up", title, "This opens the live Checkout page.", func () -> void:
+			var cents := maxi(total, 500)
+			if cents > 50000:
+				cents = 50000
+			var created := Session.create_top_up(cents)
+			var url := str(created.get("checkout_url", ""))
+			if url.is_empty():
+				_status.text = _err(created)
+				return
+			_after_pay = {"game": uid, "kind": kind, "amount": price, "total": total, "bought": false}
+			OS.shell_open(url)
+			_watch_top_up(str(created.get("top_up_uid", "")))
+		)
+	)
+
+
+func _editions(body: Dictionary) -> void:
+	var skus = _field(body, ["skus", "editions"])
+	if not (skus is Array) or (skus as Array).is_empty():
+		return
+	_heading("Editions")
+	for sku in skus:
+		if sku is Dictionary:
+			_body.add_child(_line("%s — %s" % [str(sku.get("name", "")), _money(int(sku.get("price_cents", 0)))]))
+
+
+func _changelog(uid: String, body: Dictionary) -> void:
+	var log := Session.changelog(uid)
+	var rows = log.get("changelogs", [])
+	if not (rows is Array) or (rows as Array).is_empty():
+		var latest = _field(body, ["latest_changelog", "changelog"])
+		if latest is Dictionary:
+			rows = [latest]
+		elif latest is Array:
+			rows = latest
+	if not (rows is Array) or (rows as Array).is_empty():
+		return
+	_heading("Changelog")
+	for entry in rows:
+		if entry is Dictionary:
+			_body.add_child(_line("%s — %s" % [str(entry.get("title", "")), str(entry.get("description", entry.get("created_at", "")))]))
+
+
+func _int_field(body: Dictionary, keys: Array) -> int:
+	var value: Variant = _field(body, keys)
+	if value == null or str(value).is_empty():
+		return 0
+	return int(value)
+
+
+func _bool_field(body: Dictionary, keys: Array) -> bool:
+	var value: Variant = _field(body, keys)
+	if value == null:
+		return false
+	return bool(value)
+
+
+func _field(body: Dictionary, keys: Array) -> Variant:
+	return _find_field(body, keys)
+
+
+func _find_field(node: Variant, keys: Array) -> Variant:
+	if node is Dictionary:
+		for key in keys:
+			if node.has(key) and node[key] != null:
+				return node[key]
+		for nest in ["asset", "game", "overview", "data"]:
+			if node.get(nest) is Dictionary:
+				var inner: Variant = _find_field(node[nest], keys)
+				if inner != null:
+					return inner
+	return null
+
+
+func _money(cents: int) -> String:
+	var sign := "-" if cents < 0 else ""
+	var abs_cents := absi(cents)
+	return "%s$%d.%02d" % [sign, abs_cents / 100, abs_cents % 100]
+
+
+func _bytes(n: int) -> String:
+	if n < 1024:
+		return "%s B" % n
+	return "%s KB" % (n / 1024)
 
 
 func _game_row(row: Dictionary) -> void:
@@ -352,6 +539,13 @@ func _owned_row(row: Dictionary) -> void:
 		Shell.show_play_card(uid)
 	)
 	line.add_child(play)
+	var remove := Button.new()
+	remove.text = "Uninstall"
+	remove.pressed.connect(func () -> void:
+		Installs.uninstall(uid)
+		Shell.show_page("library")
+	)
+	line.add_child(remove)
 	_body.add_child(line)
 
 

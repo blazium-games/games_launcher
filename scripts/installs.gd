@@ -12,9 +12,9 @@ func _ready() -> void:
 	pass
 
 
-func _download(url: String) -> Dictionary:
+func _download(url: String, game_uid: String, paint: bool) -> Dictionary:
 	var client := HTTPClient.new()
-	var err := client.connect_to_host(url.substr(url.find("://") + 3).split("/")[0], 443 if url.begins_with("https") else 80)
+	var err := OK
 	if url.begins_with("https"):
 		err = client.connect_to_host(url.substr(8).split("/")[0], 443, TLSOptions.client())
 	else:
@@ -24,7 +24,10 @@ func _download(url: String) -> Dictionary:
 	var ticks := 0
 	while client.get_status() == HTTPClient.STATUS_CONNECTING or client.get_status() == HTTPClient.STATUS_RESOLVING:
 		client.poll()
-		OS.delay_msec(10)
+		if paint:
+			await get_tree().process_frame
+		else:
+			OS.delay_msec(10)
 		ticks += 1
 		if ticks > 1000:
 			return {"code": 0, "body": PackedByteArray()}
@@ -37,16 +40,34 @@ func _download(url: String) -> Dictionary:
 		return {"code": 0, "body": PackedByteArray()}
 	while client.get_status() == HTTPClient.STATUS_REQUESTING:
 		client.poll()
-		OS.delay_msec(10)
+		if paint:
+			await get_tree().process_frame
+		else:
+			OS.delay_msec(10)
+	var total := _content_length(client.get_response_headers())
 	var body := PackedByteArray()
 	while client.get_status() == HTTPClient.STATUS_BODY:
 		client.poll()
 		var chunk := client.read_response_body_chunk()
 		if chunk.size() == 0:
-			OS.delay_msec(10)
+			if paint:
+				await get_tree().process_frame
+			else:
+				OS.delay_msec(10)
 		else:
 			body.append_array(chunk)
+			progress.emit(game_uid, body.size(), total)
+			if paint:
+				await get_tree().process_frame
 	return {"code": client.get_response_code(), "body": body}
+
+
+func _content_length(headers: PackedStringArray) -> int:
+	for header in headers:
+		var lower := header.to_lower()
+		if lower.begins_with("content-length:"):
+			return int(lower.substr(15).strip_edges())
+	return 0
 
 
 func root_dir() -> String:
@@ -107,6 +128,30 @@ func launch(game_uid: String) -> Dictionary:
 
 
 func install_file(game_uid: String, file_uid: String) -> Dictionary:
+	return _install_now(game_uid, file_uid)
+
+
+func install_file_with_progress(game_uid: String, file_uid: String) -> Dictionary:
+	return await _install_painted(game_uid, file_uid)
+
+
+func _install_now(game_uid: String, file_uid: String) -> Dictionary:
+	var prepared := _prepare(game_uid, file_uid)
+	if not bool(prepared.get("ok", false)):
+		return prepared
+	var fetched := _download_now(str(prepared.get("url", "")), game_uid)
+	return _store(prepared, fetched)
+
+
+func _install_painted(game_uid: String, file_uid: String) -> Dictionary:
+	var prepared := _prepare(game_uid, file_uid)
+	if not bool(prepared.get("ok", false)):
+		return prepared
+	var fetched: Dictionary = await _download(str(prepared.get("url", "")), game_uid, true)
+	return _store(prepared, fetched)
+
+
+func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 	if not Session.is_authenticated():
 		return {"ok": false, "error": "Sign in first"}
 	if not Session.owns(game_uid):
@@ -117,8 +162,12 @@ func install_file(game_uid: String, file_uid: String) -> Dictionary:
 		return {"ok": false, "error": str(link.get("error", "No download url"))}
 	var filename := str(link.get("filename", file_uid))
 	DirAccess.make_dir_recursive_absolute(game_dir(game_uid))
-	var dest := game_dir(game_uid).path_join(filename)
-	var fetched := _download(url)
+	return {"ok": true, "url": url, "dest": game_dir(game_uid).path_join(filename), "game_uid": game_uid}
+
+
+func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
+	var game_uid := str(prepared.get("game_uid", ""))
+	var dest := str(prepared.get("dest", ""))
 	var code := int(fetched.get("code", 0))
 	var body: PackedByteArray = fetched.get("body", PackedByteArray())
 	if code < 200 or code >= 300:
@@ -135,6 +184,45 @@ func install_file(game_uid: String, file_uid: String) -> Dictionary:
 	changed.emit(game_uid)
 	progress.emit(game_uid, body.size(), body.size())
 	return {"ok": true, "path": dest, "status": "installed"}
+
+
+func _download_now(url: String, game_uid: String) -> Dictionary:
+	var client := HTTPClient.new()
+	var err := OK
+	if url.begins_with("https"):
+		err = client.connect_to_host(url.substr(8).split("/")[0], 443, TLSOptions.client())
+	else:
+		err = client.connect_to_host(url.substr(7).split("/")[0], 80)
+	if err != OK:
+		return {"code": 0, "body": PackedByteArray()}
+	var ticks := 0
+	while client.get_status() == HTTPClient.STATUS_CONNECTING or client.get_status() == HTTPClient.STATUS_RESOLVING:
+		client.poll()
+		OS.delay_msec(10)
+		ticks += 1
+		if ticks > 1000:
+			return {"code": 0, "body": PackedByteArray()}
+	var path := "/"
+	var slash := url.find("/", url.find("://") + 3)
+	if slash >= 0:
+		path = url.substr(slash)
+	err = client.request(HTTPClient.METHOD_GET, path, [])
+	if err != OK:
+		return {"code": 0, "body": PackedByteArray()}
+	while client.get_status() == HTTPClient.STATUS_REQUESTING:
+		client.poll()
+		OS.delay_msec(10)
+	var total := _content_length(client.get_response_headers())
+	var body := PackedByteArray()
+	while client.get_status() == HTTPClient.STATUS_BODY:
+		client.poll()
+		var chunk := client.read_response_body_chunk()
+		if chunk.size() == 0:
+			OS.delay_msec(10)
+		else:
+			body.append_array(chunk)
+			progress.emit(game_uid, body.size(), total)
+	return {"code": client.get_response_code(), "body": body}
 
 
 func pick_file(game_uid: String, channel: String) -> String:

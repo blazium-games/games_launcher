@@ -97,6 +97,9 @@ func _ensure(key: String, title: String, game: bool) -> void:
 
 
 func _on_line(channel: String, nick: String, text: String, _at: int) -> void:
+	if text.begins_with("PLAY:"):
+		Shell.show_play_card(text.substr(5).strip_edges())
+		return
 	var key := ""
 	if channel.begins_with("#"):
 		for existing in _pages.keys():
@@ -111,4 +114,5 @@ func _on_line(channel: String, nick: String, text: String, _at: int) -> void:
 			open_friend(who)
 	if _pages.has(key):
 		var log: RichTextLabel = _pages[key]["log"]
-		log.append_text("%s: %s\n" % [nick, text])
+		var when := Time.get_datetime_string_from_unix_time(_at, true)
+		log.append_text("%s %s: %s\n" % [when, nick, text])

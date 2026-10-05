@@ -2,8 +2,9 @@
 ; Root: {autopf}\Blazium Games. Does not install into {autopf}\Blazium and does not delete Hub files.
 ;
 ; /NOCLI is the silent default and registers this launcher for blazium:// when blazium-cli is absent.
-; /INSTALLCLI copies blazium-cli from /CLISOURCE (or an existing Hub install) into this directory
-; and points the protocol at blazium-cli.exe handle-uri "%1".
+; /INSTALLCLI copies blazium-cli from /CLISOURCE, or from the Hub install directory when that is empty.
+; The protocol is pointed at that copy only when blazium-cli is not already on PATH, in Hub, or in BLAZIUM.
+; {app} is added to PATH so games.cmd can start chauffeur.exe. Uninstall removes that PATH entry.
 ; /INSTALLHUB is off unless passed. It runs a Hub installer from /HUBSETUP. It does not invent a download URL.
 
 #define MyAppName "Blazium Games"
@@ -52,22 +53,112 @@ Source: "games.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\Blazium Games"; Filename: "{app}\{#MyAppExeName}"
 
 [Code]
+const
+  EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+
 var
   CliSource: String;
   HubSetup: String;
 
-function CliAlreadyInstalled: Boolean;
+function FileOnPath(FileName: String): Boolean;
 var
-  HubDir: String;
+  Path, Dir: String;
+  P: Integer;
 begin
-  Result := RegKeyExists(HKLM, 'SOFTWARE\Blazium\Hub');
-  if Result then
-    exit;
-  if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'BLAZIUM', HubDir) then
+  Result := False;
+  Path := GetEnv('PATH');
+  while Path <> '' do
   begin
-    if FileExists(HubDir + '\blazium-cli.exe') or FileExists(HubDir + '\bin\blazium-cli.exe') then
+    P := Pos(';', Path);
+    if P > 0 then
+    begin
+      Dir := Copy(Path, 1, P - 1);
+      Path := Copy(Path, P + 1, Length(Path));
+    end
+    else
+    begin
+      Dir := Path;
+      Path := '';
+    end;
+    if (Dir <> '') and FileExists(AddBackslash(Dir) + FileName) then
+    begin
       Result := True;
+      exit;
+    end;
   end;
+end;
+
+function CliDirFrom(Root: String): String;
+begin
+  Result := '';
+  if Root = '' then
+    exit;
+  if FileExists(AddBackslash(Root) + 'blazium-cli.exe') then
+    Result := Root
+  else if FileExists(AddBackslash(Root) + 'bin\blazium-cli.exe') then
+    Result := AddBackslash(Root) + 'bin';
+end;
+
+function HubCliDir: String;
+var
+  Root: String;
+begin
+  Result := '';
+  if RegQueryStringValue(HKLM, EnvironmentKey, 'BLAZIUM', Root) then
+    Result := CliDirFrom(Root);
+  if Result <> '' then
+    exit;
+  Result := CliDirFrom(ExpandConstant('{autopf}\Blazium'));
+end;
+
+function CliAlreadyInstalled: Boolean;
+begin
+  Result := FileOnPath('blazium-cli.exe') or (HubCliDir <> '') or RegKeyExists(HKLM, 'SOFTWARE\Blazium\Hub');
+end;
+
+function NeedsAddPath(Path: string): Boolean;
+var
+  OrigPath: string;
+begin
+  if not RegQueryStringValue(HKLM, EnvironmentKey, 'Path', OrigPath) then
+  begin
+    Result := True;
+    exit;
+  end;
+  Result := Pos(';' + Uppercase(Path) + ';', ';' + Uppercase(OrigPath) + ';') = 0;
+end;
+
+procedure EnvAddPath(Path: string);
+var
+  Paths: string;
+begin
+  if not NeedsAddPath(Path) then
+    exit;
+  if not RegQueryStringValue(HKLM, EnvironmentKey, 'Path', Paths) then
+    Paths := '';
+  if Paths <> '' then
+    Paths := Paths + ';' + Path
+  else
+    Paths := Path;
+  RegWriteExpandStringValue(HKLM, EnvironmentKey, 'Path', Paths);
+end;
+
+procedure EnvRemovePath(Path: string);
+var
+  Paths: string;
+  P: Integer;
+begin
+  if not RegQueryStringValue(HKLM, EnvironmentKey, 'Path', Paths) then
+    exit;
+  P := Pos(';' + Uppercase(Path) + ';', ';' + Uppercase(Paths) + ';');
+  if P = 0 then
+    exit;
+  Delete(Paths, P, Length(Path) + 1);
+  while (Length(Paths) > 0) and (Paths[1] = ';') do
+    Delete(Paths, 1, 1);
+  while (Length(Paths) > 0) and (Paths[Length(Paths)] = ';') do
+    Delete(Paths, Length(Paths), 1);
+  RegWriteExpandStringValue(HKLM, EnvironmentKey, 'Path', Paths);
 end;
 
 function InitializeSetup: Boolean;
@@ -93,38 +184,34 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Handler, Source: String;
-  Own: Boolean;
   ResultCode: Integer;
+  Already: Boolean;
 begin
   if CurStep <> ssPostInstall then
     exit;
   if WizardIsTaskSelected('installhub') and (HubSetup <> '') and FileExists(HubSetup) then
     Exec(HubSetup, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
-  Own := not CliAlreadyInstalled;
+  Already := CliAlreadyInstalled;
+  Handler := '';
   if WizardIsTaskSelected('installcli') then
   begin
     Source := CliSource;
-    if (Source = '') and RegKeyExists(HKLM, 'SOFTWARE\Blazium\Hub') then
-      Source := '';
-    if (Source <> '') and FileExists(Source + '\blazium-cli.exe') then
+    if Source = '' then
+      Source := HubCliDir;
+    if (Source <> '') and FileExists(AddBackslash(Source) + 'blazium-cli.exe') then
     begin
-      FileCopy(Source + '\blazium-cli.exe', ExpandConstant('{app}\blazium-cli.exe'), False);
-      if FileExists(Source + '\crash_reporter.exe') then
-        FileCopy(Source + '\crash_reporter.exe', ExpandConstant('{app}\crash_reporter.exe'), False);
-      Handler := '"' + ExpandConstant('{app}\blazium-cli.exe') + '" handle-uri "%1"';
-      Own := True;
+      CopyFile(AddBackslash(Source) + 'blazium-cli.exe', ExpandConstant('{app}\blazium-cli.exe'), False);
+      if FileExists(AddBackslash(Source) + 'crash_reporter.exe') then
+        CopyFile(AddBackslash(Source) + 'crash_reporter.exe', ExpandConstant('{app}\crash_reporter.exe'), False);
+      if not Already then
+        Handler := '"' + ExpandConstant('{app}\blazium-cli.exe') + '" handle-uri "%1"';
     end
-    else
+    else if not Already then
       Handler := '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" "%1"';
   end
-  else if CliAlreadyInstalled then
-  begin
-    { Leave the existing handler and hub_remote.json alone. }
-    Handler := '';
-    Own := False;
-  end
-  else
+  else if not Already then
     Handler := '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" "%1"';
+  EnvAddPath(ExpandConstant('{app}'));
   if Handler <> '' then
   begin
     RegWriteStringValue(HKLM, 'SOFTWARE\Blazium Games', 'ProtocolOwner', '1');
@@ -150,5 +237,6 @@ begin
     end;
     RegDeleteKeyIncludingSubkeys(HKLM, 'SOFTWARE\Blazium Games');
   end;
+  EnvRemovePath(ExpandConstant('{app}'));
   DeleteFile(ExpandConstant('{userappdata}\blazium\launcher_remote.json'));
 end;

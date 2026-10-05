@@ -8,6 +8,7 @@ signal authenticated
 var login_url: String = ""
 var profile: Dictionary = {}
 var pending_uri: String = ""
+var _owners: Dictionary = {}
 
 
 func _ready() -> void:
@@ -168,8 +169,62 @@ func search_games(query: String) -> Dictionary:
 	return payload(call_host("get_public_games", [query, "game", 1, 24]))
 
 
+func remember_owner(game_uid: String, username: String) -> void:
+	var uid := game_uid.strip_edges()
+	var name := username.strip_edges().to_lower()
+	if uid != "" and name != "":
+		_owners[uid] = name
+
+
+func owner_name(game_uid: String) -> String:
+	if _owners.has(game_uid):
+		return str(_owners[game_uid])
+	for row in _rows(library(), ["library", "games"]):
+		if row is Dictionary and str(row.get("game_uid", "")) == game_uid:
+			remember_owner(game_uid, str(row.get("developer", "")))
+			return str(_owners.get(game_uid, ""))
+	for kind in ["featured", "new", "recently_updated", "made_with_blazium", "in_development", "browser_playable", "community", "tools_and_assets", "tonight", "unheard_of"]:
+		for row in _rows(shelf(kind), ["games", "items"]):
+			if row is Dictionary:
+				var uid := str(row.get("uid", row.get("game_uid", "")))
+				remember_owner(uid, str(row.get("username", "")))
+		if _owners.has(game_uid):
+			return str(_owners[game_uid])
+	return ""
+
+
 func overview(game_uid: String) -> Dictionary:
-	return payload(call_host("get_game_overview", ["", game_uid]))
+	return payload(call_host("get_game_overview", [owner_name(game_uid), game_uid]))
+
+
+func changelog(game_uid: String) -> Dictionary:
+	return payload(call_host("get_game_changelog", [owner_name(game_uid), game_uid]))
+
+
+func play_seconds(game_uid: String) -> int:
+	for row in _rows(library(), ["library", "games"]):
+		if row is Dictionary and str(row.get("game_uid", "")) == game_uid:
+			return int(row.get("play_seconds", 0))
+	return 0
+
+
+func may_write(game_uid: String) -> bool:
+	return owns(game_uid) or play_seconds(game_uid) > 0
+
+
+func owned_games() -> Array:
+	var out: Array = []
+	for row in _rows(library(), ["library", "games"]):
+		if row is Dictionary and str(row.get("game_uid", "")) != "":
+			out.append(row)
+	return out
+
+
+func _rows(body: Dictionary, keys: Array) -> Array:
+	for key in keys:
+		if body.get(key) is Array:
+			return body[key]
+	return []
 
 
 func public_user(username: String) -> Dictionary:

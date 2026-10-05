@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/chat.gd" id="1_chat"]
+
+[node name="Chats" type="Window"]
+title = "Chats"
+size = Vector2i(720, 520)
+script = ExtResource("1_chat")

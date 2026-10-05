@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Blazium Games Links
+Exec=/opt/blazium-games/BlaziumGames %u
+NoDisplay=true
+Terminal=false
+MimeType=x-scheme-handler/blazium;

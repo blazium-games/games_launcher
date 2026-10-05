@@ -1,0 +1,33 @@
+name: blazium-games
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+section: games
+priority: optional
+maintainer: Blazium Games <support@blazium.games>
+description: |
+  Blazium Games launcher. Installs under /opt/blazium-games and bundles chauffeur.
+  It does not replace a Hub install or hub_remote.json.
+vendor: Blazium Games
+homepage: https://blazium.games
+license: MIT
+contents:
+  - src: ${SOURCE_DIR}/BlaziumGames
+    dst: /opt/blazium-games/BlaziumGames
+    file_info:
+      mode: 0755
+  - src: ${SOURCE_DIR}/chauffeur
+    dst: /opt/blazium-games/chauffeur
+    file_info:
+      mode: 0755
+  - src: games.sh
+    dst: /usr/bin/chauffeur
+    file_info:
+      mode: 0755
+  - src: blazium-games.desktop
+    dst: /usr/share/applications/blazium-games.desktop
+  - src: blazium-games-uri.desktop
+    dst: /usr/share/applications/blazium-games-uri.desktop
+scripts:
+  postinstall: postinst
+  postremove: postrm

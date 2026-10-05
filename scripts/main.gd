@@ -1,0 +1,395 @@
+extends Control
+## Player pages. A link opens a page; buying, topping up, and redeeming wait for confirm.
+
+var _status: Label
+var _body: VBoxContainer
+var _poll: Timer
+var _poll_uid: String = ""
+var _polls: int = 0
+
+
+func _ready() -> void:
+	var root := VBoxContainer.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(root)
+	var nav := HBoxContainer.new()
+	root.add_child(nav)
+	for item in [["Home", "home"], ["Library", "library"], ["Wallet", "wallet"], ["Friends", "friends"], ["Profile", "profile"]]:
+		var button := Button.new()
+		button.text = item[0]
+		var page := str(item[1])
+		button.pressed.connect(func () -> void:
+			if page == "friends":
+				Shell.open_friends()
+			else:
+				Shell.show_page(page)
+		)
+		nav.add_child(button)
+	_status = Label.new()
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	root.add_child(_status)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(scroll)
+	_body = VBoxContainer.new()
+	_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_body)
+	_poll = Timer.new()
+	_poll.wait_time = 3.0
+	_poll.timeout.connect(_tick_top_up)
+	add_child(_poll)
+	Shell.navigate.connect(_show)
+	Session.authenticated.connect(func () -> void:
+		_show("home", {})
+	)
+	if Shell.pending_page != "":
+		_show(Shell.pending_page, Shell.pending_extra)
+	elif Session.is_authenticated():
+		_show("home", {})
+	else:
+		_show("login", {})
+
+
+func _show(page: String, extra: Dictionary) -> void:
+	_clear()
+	match page:
+		"notice":
+			_status.text = str(extra.get("text", ""))
+		"login":
+			_login()
+		"home":
+			_home()
+		"library":
+			_library()
+		"wallet":
+			_wallet()
+		"profile":
+			_profile()
+		"search":
+			_search(str(extra.get("q", "")))
+		"listing":
+			_listing(str(extra.get("uid", "")), bool(extra.get("launch", false)))
+		"user":
+			_user(str(extra.get("username", "")))
+		"install":
+			_install(str(extra.get("uid", "")), str(extra.get("channel", "")))
+		"checkout":
+			_checkout(str(extra.get("uid", "")))
+		"play":
+			_play(str(extra.get("uid", "")))
+		"review":
+			_review(str(extra.get("uid", "")))
+		"bug":
+			_bug(str(extra.get("uid", "")))
+		"redeem":
+			_redeem(str(extra.get("code", "")))
+		"topup":
+			_watch_top_up(str(extra.get("uid", "")))
+		_:
+			_status.text = page
+
+
+func _login() -> void:
+	_status.text = "Sign in with your Blazium account"
+	var button := Button.new()
+	button.text = "Sign in"
+	button.pressed.connect(func () -> void:
+		Session.start_login()
+		_status.text = "Continue in the browser"
+	)
+	_body.add_child(button)
+
+
+func _home() -> void:
+	if not Session.is_authenticated():
+		_login()
+		return
+	_status.text = "Blazium Games"
+	for kind in ["featured", "new", "updated"]:
+		_heading(kind.capitalize())
+		var shelf := Session.shelf(kind)
+		for row in _rows(shelf, ["games", "items"]):
+			if row is Dictionary:
+				_game_row(row)
+
+
+func _library() -> void:
+	_status.text = "Library"
+	var body := Session.library()
+	if not Session.ok(body) and body.has("error"):
+		_status.text = _err(body)
+		return
+	for row in _rows(body, ["library", "games"]):
+		if row is Dictionary:
+			_owned_row(row)
+
+
+func _wallet() -> void:
+	var body := Session.wallet()
+	_status.text = "Balance %s cents" % int(body.get("balance_cents", 0))
+	var amount := SpinBox.new()
+	amount.min_value = 100
+	amount.max_value = 100000
+	amount.step = 100
+	amount.value = 1000
+	_body.add_child(amount)
+	var button := Button.new()
+	button.text = "Add funds"
+	button.pressed.connect(func () -> void:
+		var cents := int(amount.value)
+		Confirm.ask("top_up", "Add funds?", "This opens the live Checkout page.", func () -> void:
+			var created := Session.create_top_up(cents)
+			var url := str(created.get("checkout_url", ""))
+			if url.is_empty():
+				_status.text = _err(created)
+				return
+			OS.shell_open(url)
+			_watch_top_up(str(created.get("top_up_uid", "")))
+		)
+	)
+	_body.add_child(button)
+
+
+func _profile() -> void:
+	var name := str(Session.profile.get("username", ""))
+	_status.text = name if name != "" else "Profile"
+	for key in Session.profile.keys():
+		if str(key).to_lower().find("jwt") >= 0 or str(key).to_lower().find("token") >= 0:
+			continue
+		_body.add_child(_line("%s: %s" % [key, Session.profile[key]]))
+
+
+func _search(query: String) -> void:
+	var field := LineEdit.new()
+	field.text = query
+	field.placeholder_text = "Search"
+	_body.add_child(field)
+	var button := Button.new()
+	button.text = "Search"
+	button.pressed.connect(func () -> void:
+		Shell.show_search(field.text)
+	)
+	_body.add_child(button)
+	var body := Session.search_games(query)
+	_status.text = "Search"
+	for row in _rows(body, ["games", "items", "results"]):
+		if row is Dictionary:
+			_game_row(row)
+
+
+func _listing(uid: String, launch_if_owned: bool) -> void:
+	var body := Session.overview(uid)
+	var name := str(body.get("name", uid))
+	_status.text = name
+	_body.add_child(_line(str(body.get("summary", body.get("description", "")))))
+	if Session.owns(uid):
+		_status.text = "%s — in your library" % name
+		if launch_if_owned and Installs.is_installed(uid):
+			Installs.launch(uid)
+		_action("Play", func () -> void:
+			Shell.show_play_card(uid)
+		)
+		_action("Chat", func () -> void:
+			Shell.open_chat_game(uid)
+		)
+	else:
+		_action("Buy", func () -> void:
+			Shell.show_checkout(uid)
+		)
+	_action("Review", func () -> void:
+		Shell.show_review(uid)
+	)
+	_action("Report a bug", func () -> void:
+		Shell.show_bug(uid)
+	)
+
+
+func _user(username: String) -> void:
+	var body := Session.public_user(username)
+	_status.text = username
+	for key in body.keys():
+		if key != "jwt":
+			_body.add_child(_line("%s: %s" % [key, body[key]]))
+
+
+func _install(uid: String, channel: String) -> void:
+	_status.text = "Installing"
+	if not Session.owns(uid):
+		_status.text = "Buy this game before installing"
+		_action("Buy", func () -> void:
+			Shell.show_checkout(uid)
+		)
+		return
+	var file_uid := Installs.pick_file(uid, channel)
+	var result := Installs.install_file(uid, file_uid)
+	_status.text = str(result.get("status", result.get("error", "Install failed")))
+
+
+func _checkout(uid: String) -> void:
+	_status.text = "Checkout"
+	var quoted := Session.quote(uid, "purchase", 0)
+	_body.add_child(_line("Total %s cents" % int(quoted.get("total_cents", quoted.get("amount_cents", 0)))))
+	_action("Pay with balance", func () -> void:
+		var total := int(quoted.get("total_cents", quoted.get("amount_cents", 0)))
+		Confirm.ask("purchase", "Buy this game?", "This spends wallet balance.", func () -> void:
+			var result := Session.purchase(uid, "purchase", total, total, str(Time.get_unix_time_from_system()))
+			_status.text = "Purchased" if Session.ok(result) else _err(result)
+		)
+	)
+
+
+func _play(uid: String) -> void:
+	_status.text = "Play"
+	if Session.owns(uid):
+		_body.add_child(_line("Status: %s" % Installs.status(uid)))
+		_action("Install", func () -> void:
+			Shell.install_game(uid, "")
+		)
+		_action("Launch", func () -> void:
+			var result := Installs.launch(uid)
+			_status.text = str(result.get("status", result.get("error", "")))
+		)
+		_action("Chat", func () -> void:
+			Shell.open_chat_game(uid)
+		)
+	else:
+		_body.add_child(_line("You do not own this game yet."))
+		_action("Buy", func () -> void:
+			Shell.show_checkout(uid)
+		)
+
+
+func _review(uid: String) -> void:
+	_status.text = "Review"
+	var enjoyed := CheckBox.new()
+	enjoyed.text = "I enjoyed it"
+	var friends := CheckBox.new()
+	friends.text = "I would play with friends"
+	var quality := SpinBox.new()
+	quality.min_value = 1
+	quality.max_value = 5
+	quality.value = 5
+	var text := TextEdit.new()
+	text.placeholder_text = "Review"
+	text.custom_minimum_size = Vector2(0, 120)
+	_body.add_child(enjoyed)
+	_body.add_child(friends)
+	_body.add_child(quality)
+	_body.add_child(text)
+	_action("Publish review", func () -> void:
+		var result := Session.write_review(uid, enjoyed.button_pressed, int(quality.value), friends.button_pressed, text.text)
+		_status.text = "Review saved" if Session.ok(result) else _err(result)
+	)
+
+
+func _bug(uid: String) -> void:
+	_status.text = "Bug report"
+	var text := TextEdit.new()
+	text.placeholder_text = "What happened?"
+	text.custom_minimum_size = Vector2(0, 120)
+	_body.add_child(text)
+	_action("Send report", func () -> void:
+		var result := Session.report_bug(uid, text.text)
+		_status.text = "Report sent" if Session.ok(result) else _err(result)
+	)
+
+
+func _redeem(code: String) -> void:
+	_status.text = "Redeem a key"
+	var field := LineEdit.new()
+	field.text = code
+	field.placeholder_text = "Code"
+	_body.add_child(field)
+	_action("Redeem", func () -> void:
+		var value := field.text.strip_edges()
+		Confirm.ask("redeem", "Redeem this key?", value, func () -> void:
+			var result := Session.redeem(value)
+			_status.text = "Redeemed" if Session.ok(result) else _err(result)
+		)
+	)
+
+
+func _watch_top_up(uid: String) -> void:
+	_poll_uid = uid
+	_polls = 0
+	_status.text = "Waiting for the payment"
+	if uid.is_empty():
+		_status.text = "No payment to watch"
+		return
+	_poll.start()
+	_tick_top_up()
+
+
+func _tick_top_up() -> void:
+	if _poll_uid.is_empty():
+		_poll.stop()
+		return
+	_polls += 1
+	var body := Session.top_up(_poll_uid)
+	var state := str(body.get("status", ""))
+	_status.text = "Payment %s" % state
+	if state == "paid" or _polls > 40:
+		_poll.stop()
+		_poll_uid = ""
+
+
+func _game_row(row: Dictionary) -> void:
+	var uid := str(row.get("game_uid", row.get("uid", row.get("id", ""))))
+	var name := str(row.get("name", uid))
+	_action(name, func () -> void:
+		Shell.show_listing(uid, false)
+	)
+
+
+func _owned_row(row: Dictionary) -> void:
+	var uid := str(row.get("game_uid", ""))
+	var name := str(row.get("name", uid))
+	var line := HBoxContainer.new()
+	line.add_child(_line("%s — %s" % [name, Installs.status(uid)]))
+	var play := Button.new()
+	play.text = "Play"
+	play.pressed.connect(func () -> void:
+		Shell.show_play_card(uid)
+	)
+	line.add_child(play)
+	_body.add_child(line)
+
+
+func _heading(text: String) -> void:
+	var label := _line(text)
+	label.add_theme_font_size_override("font_size", 18)
+	_body.add_child(label)
+
+
+func _action(text: String, action: Callable) -> void:
+	var button := Button.new()
+	button.text = text
+	button.pressed.connect(action)
+	_body.add_child(button)
+
+
+func _line(text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return label
+
+
+func _clear() -> void:
+	for child in _body.get_children():
+		_body.remove_child(child)
+		child.free()
+
+
+func _rows(body: Dictionary, keys: Array) -> Array:
+	for key in keys:
+		if body.get(key) is Array:
+			return body[key]
+	return []
+
+
+func _err(result: Dictionary) -> String:
+	var err = result.get("error", {})
+	if err is Dictionary:
+		return str(err.get("message", "Request failed"))
+	return str(result.get("error", "Request failed"))

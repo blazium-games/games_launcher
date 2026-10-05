@@ -1,0 +1,7 @@
+.godot/
+templates/
+export/
+*.exe
+*.pck
+*.zip
+launcher_remote.json

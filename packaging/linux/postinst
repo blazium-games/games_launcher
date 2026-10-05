@@ -1,13 +1,13 @@
 #!/bin/sh
 set -eu
-install -d /opt/blazium-games
-if [ -x /opt/blazium/bin/blazium-cli ] || command -v blazium-cli >/dev/null 2>&1; then
+install -d /opt/blazium/games /opt/blazium/bin
+if [ -x /opt/blazium/bin/blazium-cli ] || [ -x /opt/blazium/engine/blazium-hub ] || command -v blazium-cli >/dev/null 2>&1; then
   rm -f /usr/share/applications/blazium-games-uri.desktop
 else
   update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
   xdg-mime default blazium-games-uri.desktop x-scheme-handler/blazium >/dev/null 2>&1 || true
-  touch /opt/blazium-games/.protocol-owner
+  touch /opt/blazium/games/.protocol-owner
 fi
-if [ -x /opt/blazium-games/BlaziumGames ]; then
-  /opt/blazium-games/BlaziumGames --ensure-launcher-remote || true
+if [ -x /opt/blazium/games/BlaziumLauncher ]; then
+  /opt/blazium/games/BlaziumLauncher --ensure-launcher-remote || true
 fi

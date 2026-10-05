@@ -6,18 +6,18 @@ section: games
 priority: optional
 maintainer: Blazium Games <support@blazium.games>
 description: |
-  Blazium Games launcher. Installs under /opt/blazium-games and bundles chauffeur.
-  It does not replace a Hub install or hub_remote.json.
+  BlaziumLauncher. The program is /opt/blazium/games/BlaziumLauncher.
+  chauffeur is installed in /opt/blazium/bin. It does not replace BlaziumHub or hub_remote.json.
 vendor: Blazium Games
 homepage: https://blazium.games
 license: MIT
 contents:
-  - src: ${SOURCE_DIR}/BlaziumGames
-    dst: /opt/blazium-games/BlaziumGames
+  - src: ${SOURCE_DIR}/BlaziumLauncher
+    dst: /opt/blazium/games/BlaziumLauncher
     file_info:
       mode: 0755
   - src: ${SOURCE_DIR}/chauffeur
-    dst: /opt/blazium-games/chauffeur
+    dst: /opt/blazium/bin/chauffeur
     file_info:
       mode: 0755
   - src: games.sh

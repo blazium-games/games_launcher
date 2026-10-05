@@ -1,2 +1,2 @@
 #!/bin/sh
-exec /opt/blazium-games/chauffeur "$@"
+exec /opt/blazium/bin/chauffeur "$@"

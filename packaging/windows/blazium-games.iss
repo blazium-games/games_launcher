@@ -1,19 +1,19 @@
-; Blazium Games launcher.
-; Root: {autopf}\Blazium Games. Does not install into {autopf}\Blazium and does not delete Hub files.
+; BlaziumLauncher.
+; App folder: {autopf}\Blazium\Games. Shared tools live in {autopf}\Blazium.
+; Does not copy blazium-cli and does not delete BlaziumHub's Engine folder.
 ;
-; /NOCLI is the silent default and registers this launcher for blazium:// when blazium-cli is absent.
-; /INSTALLCLI copies blazium-cli from /CLISOURCE, or from the Hub install directory when that is empty.
-; The protocol is pointed at that copy only when blazium-cli is not already on PATH, in Hub, or in BLAZIUM.
-; {app} is added to PATH so games.cmd can start chauffeur.exe. Uninstall removes that PATH entry.
-; /INSTALLHUB is off unless passed. It runs a Hub installer from /HUBSETUP. It does not invent a download URL.
+; /NOCLI does not register blazium://. That is how BlaziumHub installs this app
+; without replacing its own handler.
+; /INSTALLHUB downloads BlaziumHub from https://cdn.blazium.app/hub/hub.json
+; unless /HUBSETUP points at a local setup.
 
-#define MyAppName "Blazium Games"
+#define MyAppName "BlaziumLauncher"
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
 #endif
 #define MyAppPublisher "Blazium Games"
 #define MyAppURL "https://blazium.games"
-#define MyAppExeName "BlaziumGames.exe"
+#define MyAppExeName "BlaziumLauncher.exe"
 #ifndef MyAppSourceDir
   #define MyAppSourceDir "..\..\export"
 #endif
@@ -24,10 +24,10 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-DefaultDirName={autopf}\Blazium Games
-DefaultGroupName=Blazium Games
+DefaultDirName={autopf}\Blazium\Games
+DefaultGroupName=Blazium
 OutputDir=Output
-OutputBaseFilename=BlaziumGames-Setup-{#MyAppVersion}
+OutputBaseFilename=BlaziumLauncher-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -36,29 +36,35 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ChangesAssociations=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
+CloseApplications=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "installcli"; Description: "Install blazium-cli into this folder and let it handle blazium:// links"; GroupDescription: "Optional tools:"; Flags: unchecked
-Name: "installhub"; Description: "Run the Blazium Hub installer from a packager-supplied setup"; GroupDescription: "Optional tools:"; Flags: unchecked
+Name: "installhub"; Description: "Download and install BlaziumHub into the shared Blazium folder"; GroupDescription: "Optional tools:"; Flags: unchecked
 
 [Files]
-Source: "{#MyAppSourceDir}\BlaziumGames.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#MyAppSourceDir}\chauffeur.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "games.cmd"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppSourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppSourceDir}\chauffeur.exe"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion
+Source: "games.cmd"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion uninsneveruninstall
 
 [Icons]
-Name: "{group}\Blazium Games"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 
 [Code]
 const
   EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+  ProtocolOwnerKey = 'SOFTWARE\BlaziumLauncher';
 
 var
-  CliSource: String;
   HubSetup: String;
+  SkipProtocol: Boolean;
+
+function SharedRoot: String;
+begin
+  Result := ExpandConstant('{autopf}\Blazium');
+end;
 
 function FileOnPath(FileName: String): Boolean;
 var
@@ -108,7 +114,7 @@ begin
     Result := CliDirFrom(Root);
   if Result <> '' then
     exit;
-  Result := CliDirFrom(ExpandConstant('{autopf}\Blazium'));
+  Result := CliDirFrom(SharedRoot);
 end;
 
 function CliAlreadyInstalled: Boolean;
@@ -161,21 +167,86 @@ begin
   RegWriteExpandStringValue(HKLM, EnvironmentKey, 'Path', Paths);
 end;
 
+function SaveText(const Path, Contents: String): Boolean;
+begin
+  Result := SaveStringToFile(Path, Contents, False);
+end;
+
+function DownloadToFile(const URL, Dest: String): Boolean;
+var
+  ResultCode: Integer;
+  ScriptPath: String;
+begin
+  Result := False;
+  ForceDirectories(ExpandConstant('{tmp}'));
+  ScriptPath := ExpandConstant('{tmp}\blazium-download.ps1');
+  if not SaveText(ScriptPath,
+    '$ProgressPreference = ''SilentlyContinue''; Invoke-WebRequest -UseBasicParsing -Uri ''' + URL + ''' -OutFile ''' + Dest + '''') then
+    exit;
+  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 0) and FileExists(Dest);
+end;
+
+function HubSetupFromManifest: String;
+var
+  JsonPath, SetupPath, ScriptPath: String;
+  ResultCode: Integer;
+begin
+  Result := '';
+  JsonPath := ExpandConstant('{tmp}\hub.json');
+  SetupPath := ExpandConstant('{tmp}\BlaziumHub-Setup.exe');
+  if not DownloadToFile('https://cdn.blazium.app/hub/hub.json', JsonPath) then
+  begin
+    Log('Could not download hub.json');
+    exit;
+  end;
+  ScriptPath := ExpandConstant('{tmp}\blazium-hub-pick.ps1');
+  if not SaveText(ScriptPath,
+    '$ProgressPreference = ''SilentlyContinue''; ' +
+    '$m = Get-Content -Raw ''' + JsonPath + ''' | ConvertFrom-Json; ' +
+    '$ver = [string]$m.latest; ' +
+    '$entry = $m.versions.PSObject.Properties[$ver].Value; ' +
+    '$d = $entry.downloads | Where-Object { $_.platform -eq ''windows'' -and ($_.arch -eq ''x86_64'' -or $_.arch -eq ''amd64'') } | Select-Object -First 1; ' +
+    'if (-not $d.download_url) { exit 1 }; ' +
+    'Invoke-WebRequest -UseBasicParsing -Uri $d.download_url -OutFile ''' + SetupPath + '''') then
+    exit;
+  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    if (ResultCode = 0) and FileExists(SetupPath) then
+      Result := SetupPath;
+end;
+
+procedure InstallHubNow;
+var
+  Setup, Args: String;
+  ResultCode: Integer;
+begin
+  Setup := HubSetup;
+  if (Setup = '') or not FileExists(Setup) then
+    Setup := HubSetupFromManifest;
+  if (Setup = '') or not FileExists(Setup) then
+  begin
+    Log('BlaziumHub setup was not found');
+    exit;
+  end;
+  Args := '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="' + SharedRoot + '"';
+  Log('Running BlaziumHub setup ' + Setup);
+  Exec(Setup, Args, '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+  Log('BlaziumHub setup exit=' + IntToStr(ResultCode));
+end;
+
 function InitializeSetup: Boolean;
 var
   I: Integer;
   Arg: String;
 begin
   Result := True;
-  CliSource := ExpandConstant('{param:CLISOURCE}');
+  SkipProtocol := False;
   HubSetup := ExpandConstant('{param:HUBSETUP}');
   for I := 1 to ParamCount do
   begin
     Arg := Uppercase(ParamStr(I));
     if Arg = '/NOCLI' then
-      WizardSelectTasks('');
-    if Arg = '/INSTALLCLI' then
-      WizardSelectTasks('installcli');
+      SkipProtocol := True;
     if Arg = '/INSTALLHUB' then
       WizardSelectTasks('installhub');
   end;
@@ -183,60 +254,53 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  Handler, Source: String;
+  Existing: String;
   ResultCode: Integer;
   Already: Boolean;
 begin
   if CurStep <> ssPostInstall then
     exit;
-  if WizardIsTaskSelected('installhub') and (HubSetup <> '') and FileExists(HubSetup) then
-    Exec(HubSetup, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
-  Already := CliAlreadyInstalled;
-  Handler := '';
-  if WizardIsTaskSelected('installcli') then
+  if WizardIsTaskSelected('installhub') or ((HubSetup <> '') and FileExists(HubSetup)) then
+    InstallHubNow;
+  Already := SkipProtocol or CliAlreadyInstalled;
+  if not RegQueryStringValue(HKLM, EnvironmentKey, 'BLAZIUM', Existing) then
+    RegWriteExpandStringValue(HKLM, EnvironmentKey, 'BLAZIUM', SharedRoot);
+  EnvAddPath(SharedRoot);
+  if not Already then
   begin
-    Source := CliSource;
-    if Source = '' then
-      Source := HubCliDir;
-    if (Source <> '') and FileExists(AddBackslash(Source) + 'blazium-cli.exe') then
-    begin
-      CopyFile(AddBackslash(Source) + 'blazium-cli.exe', ExpandConstant('{app}\blazium-cli.exe'), False);
-      if FileExists(AddBackslash(Source) + 'crash_reporter.exe') then
-        CopyFile(AddBackslash(Source) + 'crash_reporter.exe', ExpandConstant('{app}\crash_reporter.exe'), False);
-      if not Already then
-        Handler := '"' + ExpandConstant('{app}\blazium-cli.exe') + '" handle-uri "%1"';
-    end
-    else if not Already then
-      Handler := '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" "%1"';
-  end
-  else if not Already then
-    Handler := '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" "%1"';
-  EnvAddPath(ExpandConstant('{app}'));
-  if Handler <> '' then
-  begin
-    RegWriteStringValue(HKLM, 'SOFTWARE\Blazium Games', 'ProtocolOwner', '1');
+    RegWriteStringValue(HKLM, ProtocolOwnerKey, 'ProtocolOwner', '1');
     RegWriteStringValue(HKCR, 'blazium', '', 'URL:Blazium Protocol');
     RegWriteStringValue(HKCR, 'blazium', 'URL Protocol', '');
-    RegWriteStringValue(HKCR, 'blazium\shell\open\command', '', Handler);
+    RegWriteStringValue(HKCR, 'blazium\shell\open\command', '', '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" "%1"');
   end;
   Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--ensure-launcher-remote', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  Command: String;
+  Command, Owner: String;
+  CliRemains: Boolean;
 begin
   if CurUninstallStep <> usPostUninstall then
     exit;
-  if RegQueryStringValue(HKLM, 'SOFTWARE\Blazium Games', 'ProtocolOwner', Command) then
+  CliRemains := FileExists(AddBackslash(SharedRoot) + 'blazium-cli.exe') or FileExists(AddBackslash(SharedRoot) + 'Engine\BlaziumHub.exe');
+  if not CliRemains then
+  begin
+    EnvRemovePath(SharedRoot);
+    if not FileExists(AddBackslash(SharedRoot) + 'chauffeur.exe') then
+      RegDeleteValue(HKLM, EnvironmentKey, 'BLAZIUM');
+  end;
+  if RegQueryStringValue(HKLM, ProtocolOwnerKey, 'ProtocolOwner', Owner) or
+     RegQueryStringValue(HKLM, 'SOFTWARE\Blazium Games', 'ProtocolOwner', Owner) then
   begin
     if RegQueryStringValue(HKCR, 'blazium\shell\open\command', '', Command) then
     begin
-      if Pos('Blazium Games', Command) > 0 then
+      if (Pos('BlaziumLauncher.exe', Command) > 0) and not FileExists(AddBackslash(SharedRoot) + 'blazium-cli.exe') then
         RegDeleteKeyIncludingSubkeys(HKCR, 'blazium');
     end;
+    RegDeleteKeyIncludingSubkeys(HKLM, ProtocolOwnerKey);
     RegDeleteKeyIncludingSubkeys(HKLM, 'SOFTWARE\Blazium Games');
   end;
-  EnvRemovePath(ExpandConstant('{app}'));
   DeleteFile(ExpandConstant('{userappdata}\blazium\launcher_remote.json'));
+  DeleteFile(AddBackslash(SharedRoot) + 'games.cmd');
 end;

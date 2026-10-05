@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Blazium Games
-Exec=/opt/blazium-games/BlaziumGames
+Name=BlaziumLauncher
+Exec=/opt/blazium/games/BlaziumLauncher
 Terminal=false
 Categories=Game;

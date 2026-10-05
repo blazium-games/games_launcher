@@ -46,7 +46,7 @@ jobs:
             template: blazium.windows.template_release.x86_64.exe
             template_alt: blazium.windows.template_release.x86_64.blazium.exe
             preset: Windows Desktop
-            out: export/BlaziumGames.exe
+            out: export/BlaziumLauncher.exe
             chauffeur_platform: windows-amd64
             chauffeur_name: chauffeur.exe
           - os: ubuntu-22.04
@@ -55,7 +55,7 @@ jobs:
             template: blazium.linuxbsd.template_release.x86_64
             template_alt: blazium.linuxbsd.template_release.x86_64.blazium
             preset: Linux
-            out: export/BlaziumGames
+            out: export/BlaziumLauncher
             chauffeur_platform: linux-amd64
             chauffeur_name: chauffeur
 
@@ -151,7 +151,7 @@ jobs:
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           & $iscc "/DMyAppVersion=0.1.0" "packaging\windows\blazium-games.iss"
-          if (-not (Test-Path "packaging\windows\Output\BlaziumGames-Setup-0.1.0.exe")) { exit 1 }
+          if (-not (Test-Path "packaging\windows\Output\BlaziumLauncher-Setup-0.1.0.exe")) { exit 1 }
       - name: Signing secrets present
         id: sign
         shell: bash
@@ -182,7 +182,7 @@ jobs:
           password: ${{ secrets.ES_PASSWORD }}
           credential_id: ${{ secrets.CREDENTIAL_ID }}
           totp_secret: ${{ secrets.ES_TOTP_SECRET }}
-          file_path: packaging/windows/Output/BlaziumGames-Setup-0.1.0.exe
+          file_path: packaging/windows/Output/BlaziumLauncher-Setup-0.1.0.exe
           output_path: packaging/windows/Output
           environment_name: PROD
       - uses: actions/upload-artifact@v4
@@ -213,7 +213,7 @@ jobs:
           NFPM_ARCH: amd64
         run: |
           set -euo pipefail
-          chmod +x export/BlaziumGames export/chauffeur packaging/linux/games.sh packaging/linux/postinst packaging/linux/postrm
+          chmod +x export/BlaziumLauncher export/chauffeur packaging/linux/games.sh packaging/linux/postinst packaging/linux/postrm
           curl -fsSL -o /tmp/nfpm.tar.gz https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz
           tar -C /tmp -xzf /tmp/nfpm.tar.gz nfpm
           mkdir -p dist

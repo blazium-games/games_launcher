@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Blazium Games Links
-Exec=/opt/blazium-games/BlaziumGames %u
+Name=BlaziumLauncher Links
+Exec=/opt/blazium/games/BlaziumLauncher %u
 NoDisplay=true
 Terminal=false
 MimeType=x-scheme-handler/blazium;

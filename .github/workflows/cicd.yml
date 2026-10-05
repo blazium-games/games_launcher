@@ -29,6 +29,7 @@ jobs:
           grep -q '39220' project.godot
           grep -q 'crash_reporter/endpoint="https://crash.blazium.app/v1/reports"' project.godot
           grep -q 'crash_reporter/app_id="blazium-launcher"' project.godot
+          grep -q 'update apply --product launcher' scripts/launcher_updates.gd
           if git ls-files | grep -E '(^|/)\.env$|\.exe$|templates/'; then
             echo "secrets or binaries are tracked" >&2
             exit 1

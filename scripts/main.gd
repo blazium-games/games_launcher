@@ -52,6 +52,11 @@ func _ready() -> void:
 		_show("home", {})
 	else:
 		_show("login", {})
+	if LauncherUpdates:
+		LauncherUpdates.status_changed.connect(func (message: String) -> void:
+			_status.text = message
+		)
+		LauncherUpdates.check_and_prompt(false)
 
 
 func _show(page: String, extra: Dictionary) -> void:
@@ -187,6 +192,13 @@ func _profile() -> void:
 		if str(key).to_lower().find("jwt") >= 0 or str(key).to_lower().find("token") >= 0:
 			continue
 		_body.add_child(_line("%s: %s" % [key, Session.profile[key]]))
+	var updates := Button.new()
+	updates.text = "Check for updates"
+	updates.pressed.connect(func () -> void:
+		if LauncherUpdates:
+			LauncherUpdates.check_and_prompt(true)
+	)
+	_body.add_child(updates)
 
 
 func _search(query: String) -> void:

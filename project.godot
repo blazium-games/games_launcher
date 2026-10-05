@@ -35,6 +35,7 @@ LauncherRemote="*res://scripts/launcher_remote.gd"
 IrcClient="*res://scripts/irc_client.gd"
 PlayerMcp="*res://scripts/player_mcp.gd"
 Shell="*res://scripts/shell.gd"
+LauncherUpdates="*res://scripts/launcher_updates.gd"
 
 [blazium]
 

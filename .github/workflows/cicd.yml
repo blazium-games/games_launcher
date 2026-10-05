@@ -1,0 +1,257 @@
+name: Build and publish the launcher
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Packaging files
+        run: |
+          set -euo pipefail
+          test -f project.godot
+          test -f scenes/boot.tscn
+          test -f scenes/main.tscn
+          test -f scenes/friends_window.tscn
+          test -f scenes/chat_window.tscn
+          test -f packaging/windows/blazium-games.iss
+          test -f packaging/linux/nfpm.yaml
+          grep -q 'B1A21E00-6A4E-4C3A-9F10-6A7E1A0C4D21' packaging/windows/blazium-games.iss
+          grep -q '39220' project.godot
+          if git ls-files | grep -E '(^|/)\.env$|\.exe$|templates/'; then
+            echo "secrets or binaries are tracked" >&2
+            exit 1
+          fi
+
+  export:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows
+            editor: blazium.windows.editor.x86_64.exe
+            template: blazium.windows.template_release.x86_64.exe
+            preset: Windows Desktop
+            out: export/BlaziumGames.exe
+            chauffeur_platform: windows-amd64
+            chauffeur_name: chauffeur.exe
+          - os: ubuntu-22.04
+            platform: linuxbsd
+            editor: blazium.linuxbsd.editor.x86_64
+            template: blazium.linuxbsd.template_release.x86_64
+            preset: Linux
+            out: export/BlaziumGames
+            chauffeur_platform: linux-amd64
+            chauffeur_name: chauffeur
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require module read token
+        shell: bash
+        env:
+          GAMES_MODULE_READ_TOKEN: ${{ secrets.GAMES_MODULE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GAMES_MODULE_READ_TOKEN}" ]; then
+            echo "GAMES_MODULE_READ_TOKEN is missing. Export needs a fine-grained read token for blazium-games/games_module." >&2
+            exit 1
+          fi
+
+      - name: Linux editor libraries
+        if: matrix.platform == 'linuxbsd'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-6 libxcursor1 libxinerama1 libxi6 libxrandr2 libgl1 libasound2 unzip
+
+      - name: Download games_module templates
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GAMES_MODULE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release list --repo blazium-games/games_module --limit 30 --json tagName,isDraft --jq '.[] | select(.isDraft==false) | .tagName' | grep '^templates-' | head -n 1 || true)"
+          if [ -z "$tag" ]; then
+            echo "No templates-* release on blazium-games/games_module." >&2
+            exit 1
+          fi
+          echo "Using ${tag}"
+          mkdir -p .ci/host templates
+          gh release download "$tag" --repo blazium-games/games_module --dir .ci/host --clobber
+          editor="$(find .ci/host -type f -name '${{ matrix.editor }}' | head -n 1)"
+          template="$(find .ci/host -type f -name '${{ matrix.template }}' | head -n 1)"
+          test -n "$editor"
+          test -n "$template"
+          mkdir -p .ci/editor
+          cp "$editor" ".ci/editor/${{ matrix.editor }}"
+          cp "$template" "templates/${{ matrix.template }}"
+          chmod +x ".ci/editor/${{ matrix.editor }}" "templates/${{ matrix.template }}" || true
+
+      - name: Download chauffeur
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export .ci/chauffeur
+          curl -fsSL -o .ci/chauffeur/archive "https://cdn.blazium.online/tools/chauffeur/${{ matrix.chauffeur_platform }}/latest/archive/default"
+          unzip -o .ci/chauffeur/archive -d .ci/chauffeur
+          test -f ".ci/chauffeur/${{ matrix.chauffeur_name }}"
+          cp ".ci/chauffeur/${{ matrix.chauffeur_name }}" "export/${{ matrix.chauffeur_name }}"
+
+      - name: Export
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          ".ci/editor/${{ matrix.editor }}" --headless --path . --export-release "${{ matrix.preset }}" "${{ matrix.out }}"
+          test -f "${{ matrix.out }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: export-${{ matrix.platform }}
+          path: export/**
+
+  package-windows:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: export
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: export-windows
+          path: export
+      - name: Inno Setup
+        shell: powershell
+        run: choco install innosetup -y --no-progress
+      - name: Compile installer
+        shell: powershell
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppVersion=0.1.0" "packaging\windows\blazium-games.iss"
+          if (-not (Test-Path "packaging\windows\Output\BlaziumGames-Setup-0.1.0.exe")) { exit 1 }
+      - name: Signing secrets present
+        id: sign
+        shell: bash
+        env:
+          ES_USERNAME: ${{ secrets.ES_USERNAME }}
+          ES_PASSWORD: ${{ secrets.ES_PASSWORD }}
+          CREDENTIAL_ID: ${{ secrets.CREDENTIAL_ID }}
+          ES_TOTP_SECRET: ${{ secrets.ES_TOTP_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -z "${ES_USERNAME}" ] && missing="${missing} ES_USERNAME"
+          [ -z "${ES_PASSWORD}" ] && missing="${missing} ES_PASSWORD"
+          [ -z "${CREDENTIAL_ID}" ] && missing="${missing} CREDENTIAL_ID"
+          [ -z "${ES_TOTP_SECRET}" ] && missing="${missing} ES_TOTP_SECRET"
+          if [ -n "$missing" ]; then
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "Signing skipped. Missing:${missing}. Publishing the unsigned installer."
+          else
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: bioblaze/sslcom-code-signer@v6
+        if: steps.sign.outputs.sign == 'true'
+        continue-on-error: true
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          file_path: packaging/windows/Output/BlaziumGames-Setup-0.1.0.exe
+          output_path: packaging/windows/Output
+          environment_name: PROD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: packaging/windows/Output/*.exe
+
+  package-linux:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: export
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: export-linuxbsd
+          path: export
+      - name: Build deb
+        env:
+          VERSION: "0.1.0"
+          SOURCE_DIR: ${{ github.workspace }}/export
+          NFPM_ARCH: amd64
+        run: |
+          set -euo pipefail
+          chmod +x export/BlaziumGames export/chauffeur packaging/linux/games.sh packaging/linux/postinst packaging/linux/postrm
+          curl -fsSL -o /tmp/nfpm.tar.gz https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz
+          tar -C /tmp -xzf /tmp/nfpm.tar.gz nfpm
+          mkdir -p dist
+          /tmp/nfpm package --config packaging/linux/nfpm.yaml --packager deb --target "dist/blazium-games_${VERSION}_amd64.deb"
+          test -f "dist/blazium-games_${VERSION}_amd64.deb"
+      - name: Sign deb when the key exists
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY}" ]; then
+            echo "GPG_PRIVATE_KEY is missing. Publishing the unsigned deb."
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --detach-sign --armor "dist/blazium-games_0.1.0_amd64.deb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-installer
+          path: dist/**
+
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [package-windows, package-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-installer"
+          merge-multiple: true
+          path: dist
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="launcher-${GITHUB_SHA::12}"
+          gh release create "$tag" dist/** --repo "${GITHUB_REPOSITORY}" --title "Blazium Games launcher" --notes "Windows setup and Linux deb for ${GITHUB_SHA}."
+      - name: Spaces upload when credentials exist
+        env:
+          DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+          DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
+          DO_SPACE_NAME: ${{ secrets.DO_SPACE_NAME }}
+          DO_SPACE_REGION: ${{ secrets.DO_SPACE_REGION }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -z "${DO_ACCESS_KEY}" ] && missing="${missing} DO_ACCESS_KEY"
+          [ -z "${DO_SECRET_KEY}" ] && missing="${missing} DO_SECRET_KEY"
+          [ -z "${DO_SPACE_NAME}" ] && missing="${missing} DO_SPACE_NAME"
+          [ -z "${DO_SPACE_REGION}" ] && missing="${missing} DO_SPACE_REGION"
+          if [ -n "$missing" ]; then
+            echo "Spaces upload skipped. Missing:${missing}."
+            exit 0
+          fi
+          echo "Spaces credentials are present. Upload stays on the GitHub release until a catalog path is added."

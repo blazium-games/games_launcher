@@ -1,6 +1,8 @@
 ; BlaziumLauncher.
 ; App folder: {autopf}\Blazium\Games. Shared tools live in {autopf}\Blazium.
-; Does not copy blazium-cli and does not delete BlaziumHub's Engine folder.
+; Ships chauffeur and, when missing, blazium-cli into the shared root.
+; crash_reporter.exe is installed next to BlaziumLauncher.exe.
+; Does not delete BlaziumHub's Engine folder.
 ;
 ; /NOCLI does not register blazium://. That is how BlaziumHub installs this app
 ; without replacing its own handler.
@@ -46,7 +48,9 @@ Name: "installhub"; Description: "Download and install BlaziumHub into the share
 
 [Files]
 Source: "{#MyAppSourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppSourceDir}\crash_reporter.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyAppSourceDir}\chauffeur.exe"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion
+Source: "{#MyAppSourceDir}\blazium-cli.exe"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 Source: "games.cmd"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion uninsneveruninstall
 
 [Icons]
@@ -60,6 +64,7 @@ const
 var
   HubSetup: String;
   SkipProtocol: Boolean;
+  CliWasPresent: Boolean;
 
 function SharedRoot: String;
 begin
@@ -241,6 +246,7 @@ var
 begin
   Result := True;
   SkipProtocol := False;
+  CliWasPresent := CliAlreadyInstalled;
   HubSetup := ExpandConstant('{param:HUBSETUP}');
   for I := 1 to ParamCount do
   begin
@@ -262,10 +268,11 @@ begin
     exit;
   if WizardIsTaskSelected('installhub') or ((HubSetup <> '') and FileExists(HubSetup)) then
     InstallHubNow;
-  Already := SkipProtocol or CliAlreadyInstalled;
+  Already := SkipProtocol or CliWasPresent;
   if not RegQueryStringValue(HKLM, EnvironmentKey, 'BLAZIUM', Existing) then
     RegWriteExpandStringValue(HKLM, EnvironmentKey, 'BLAZIUM', SharedRoot);
   EnvAddPath(SharedRoot);
+  SaveText(ExpandConstant('{app}\VERSION'), '{#MyAppVersion}');
   if not Already then
   begin
     RegWriteStringValue(HKLM, ProtocolOwnerKey, 'ProtocolOwner', '1');
@@ -279,11 +286,19 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Command, Owner: String;
-  CliRemains: Boolean;
+  CliRemains, HubInstalled: Boolean;
 begin
+  if CurUninstallStep = usUninstall then
+  begin
+    DeleteFile(ExpandConstant('{app}\VERSION'));
+    exit;
+  end;
   if CurUninstallStep <> usPostUninstall then
     exit;
-  CliRemains := FileExists(AddBackslash(SharedRoot) + 'blazium-cli.exe') or FileExists(AddBackslash(SharedRoot) + 'Engine\BlaziumHub.exe');
+  HubInstalled := FileExists(AddBackslash(SharedRoot) + 'Engine\BlaziumHub.exe');
+  if not HubInstalled then
+    DeleteFile(AddBackslash(SharedRoot) + 'blazium-cli.exe');
+  CliRemains := FileExists(AddBackslash(SharedRoot) + 'blazium-cli.exe') or HubInstalled;
   if not CliRemains then
   begin
     EnvRemovePath(SharedRoot);

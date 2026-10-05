@@ -6,6 +6,9 @@ if [ -f /opt/blazium/games/.protocol-owner ]; then
 fi
 rm -rf /opt/blazium/games
 rm -f /opt/blazium/bin/chauffeur /usr/bin/chauffeur
+if [ ! -x /opt/blazium/engine/blazium-hub ]; then
+  rm -f /opt/blazium/bin/blazium-cli
+fi
 rmdir /opt/blazium/bin 2>/dev/null || true
 rmdir /opt/blazium 2>/dev/null || true
 if [ -n "${HOME:-}" ]; then

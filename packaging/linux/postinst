@@ -1,7 +1,14 @@
 #!/bin/sh
 set -eu
 install -d /opt/blazium/games /opt/blazium/bin
+had_handler=0
 if [ -x /opt/blazium/bin/blazium-cli ] || [ -x /opt/blazium/engine/blazium-hub ] || command -v blazium-cli >/dev/null 2>&1; then
+  had_handler=1
+fi
+if [ ! -x /opt/blazium/bin/blazium-cli ] && [ -x /opt/blazium/games/blazium-cli ]; then
+  cp -a /opt/blazium/games/blazium-cli /opt/blazium/bin/blazium-cli
+fi
+if [ "$had_handler" -eq 1 ]; then
   rm -f /usr/share/applications/blazium-games-uri.desktop
 else
   update-desktop-database /usr/share/applications >/dev/null 2>&1 || true

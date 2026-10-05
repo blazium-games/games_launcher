@@ -7,13 +7,25 @@ priority: optional
 maintainer: Blazium Games <support@blazium.games>
 description: |
   BlaziumLauncher. The program is /opt/blazium/games/BlaziumLauncher.
-  chauffeur is installed in /opt/blazium/bin. It does not replace BlaziumHub or hub_remote.json.
+  chauffeur and blazium-cli are installed in /opt/blazium/bin.
+  crash_reporter is installed next to BlaziumLauncher.
+  It does not replace BlaziumHub or hub_remote.json.
 vendor: Blazium Games
 homepage: https://blazium.games
 license: MIT
 contents:
   - src: ${SOURCE_DIR}/BlaziumLauncher
     dst: /opt/blazium/games/BlaziumLauncher
+    file_info:
+      mode: 0755
+  - src: ${SOURCE_DIR}/crash_reporter
+    dst: /opt/blazium/games/crash_reporter
+    file_info:
+      mode: 0755
+  - src: ${SOURCE_DIR}/VERSION
+    dst: /opt/blazium/games/VERSION
+  - src: ${SOURCE_DIR}/blazium-cli
+    dst: /opt/blazium/games/blazium-cli
     file_info:
       mode: 0755
   - src: ${SOURCE_DIR}/chauffeur

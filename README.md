@@ -4,7 +4,7 @@ Desktop player for [Blazium Games](https://blazium.games). It installs and plays
 
 ## Install
 
-Download the latest Windows setup from [Releases](https://github.com/blazium-games/games_launcher/releases). Windows 10 or 11, 64-bit. The program is `BlaziumLauncher.exe` at `{autopf}\Blazium\Games`. Shared tools (`blazium-cli`, `chauffeur`, `crash_reporter`) live in `{autopf}\Blazium`, next to `Engine` (BlaziumHub). A Linux package is not in the current release. macOS is not supported.
+Download the latest Windows setup from [Releases](https://github.com/blazium-games/games_launcher/releases). Windows 10 or 11, 64-bit. The program is `BlaziumLauncher.exe` at `{autopf}\Blazium\Games`, with `crash_reporter.exe` beside it. `blazium-cli` and `chauffeur` live in `{autopf}\Blazium`, next to `Engine` (BlaziumHub). Crash reports go to `https://crash.blazium.app/v1/reports`. A Linux package is not in the current release. macOS is not supported.
 
 ## Platform
 

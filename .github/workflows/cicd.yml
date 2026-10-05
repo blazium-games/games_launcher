@@ -27,6 +27,8 @@ jobs:
           test -f packaging/linux/nfpm.yaml
           grep -q 'B1A21E00-6A4E-4C3A-9F10-6A7E1A0C4D21' packaging/windows/blazium-games.iss
           grep -q '39220' project.godot
+          grep -q 'crash_reporter/endpoint="https://crash.blazium.app/v1/reports"' project.godot
+          grep -q 'crash_reporter/app_id="blazium-launcher"' project.godot
           if git ls-files | grep -E '(^|/)\.env$|\.exe$|templates/'; then
             echo "secrets or binaries are tracked" >&2
             exit 1
@@ -117,6 +119,25 @@ jobs:
           python -c "import zipfile; zipfile.ZipFile(r'.ci/chauffeur/archive').extractall(r'.ci/chauffeur')"
           test -f ".ci/chauffeur/${{ matrix.chauffeur_name }}"
           cp ".ci/chauffeur/${{ matrix.chauffeur_name }}" "export/${{ matrix.chauffeur_name }}"
+          printf '0.1.0\n' > export/VERSION
+
+      - name: Download blazium-cli and crash reporter
+        if: steps.host.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          else
+            PY=python
+          fi
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            "$PY" ci/fetch_latest_cli.py --platform windows --arch x86_64 --out export/blazium-cli.exe
+            "$PY" ci/fetch_latest_crash_reporter.py --platform windows --arch x86_64 --out export/crash_reporter.exe
+          else
+            "$PY" ci/fetch_latest_cli.py --platform linux --arch x86_64 --out export/blazium-cli
+            "$PY" ci/fetch_latest_crash_reporter.py --platform linux --arch x86_64 --out export/crash_reporter
+          fi
 
       - name: Export
         if: steps.host.outputs.ready == 'true'
@@ -213,7 +234,7 @@ jobs:
           NFPM_ARCH: amd64
         run: |
           set -euo pipefail
-          chmod +x export/BlaziumLauncher export/chauffeur packaging/linux/games.sh packaging/linux/postinst packaging/linux/postrm
+          chmod +x export/BlaziumLauncher export/chauffeur export/blazium-cli export/crash_reporter packaging/linux/games.sh packaging/linux/postinst packaging/linux/postrm
           curl -fsSL -o /tmp/nfpm.tar.gz https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz
           tar -C /tmp -xzf /tmp/nfpm.tar.gz nfpm
           mkdir -p dist
@@ -253,12 +274,55 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="launcher-${GITHUB_SHA::12}"
           mapfile -t files < <(find dist -type f)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No installers were produced."
             exit 1
           fi
+          tag="launcher-${GITHUB_SHA::12}"
+          export TAG="$tag"
+          python3 - << 'PY'
+          import datetime, hashlib, json, os
+          from pathlib import Path
+          dist = Path("dist")
+          version = "0.1.0"
+          tag = os.environ["TAG"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          base = f"https://github.com/{repo}/releases/download/{tag}"
+          mapping = [
+              ("BlaziumLauncher-Setup-0.1.0.exe", "windows", "x86_64"),
+              ("blazium-games_0.1.0_amd64.deb", "linux", "x86_64"),
+          ]
+          downloads = []
+          for name, platform, arch in mapping:
+              path = dist / name
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              downloads.append({
+                  "platform": platform,
+                  "arch": arch,
+                  "filename": name,
+                  "download_url": f"{base}/{name}",
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+          if not downloads:
+              raise SystemExit("launcher.json needs at least one installer")
+          doc = {
+              "latest": version,
+              "versions": {
+                  version: {
+                      "released_on": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "downloads": downloads,
+                  }
+              },
+          }
+          out = dist / "launcher.json"
+          out.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+          print(f"Wrote {out} with {len(downloads)} download(s)")
+          PY
+          mapfile -t files < <(find dist -type f)
           gh release create "$tag" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Blazium Games launcher" --notes "Installer artifacts for ${GITHUB_SHA}."
       - name: Spaces upload when credentials exist
         env:

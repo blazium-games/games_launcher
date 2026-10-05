@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
-install -d /opt/blazium/games /opt/blazium/bin
+install -d /opt/blazium/games /opt/blazium/bin /etc/profile.d
+if [ ! -f /etc/profile.d/blazium.sh ]; then
+  cat > /etc/profile.d/blazium.sh << 'EOF'
+# Blazium Hub + CLI environment (installed to /etc/profile.d/blazium.sh)
+export BLAZIUM=/opt/blazium
+case ":${PATH}:" in
+  *":${BLAZIUM}/bin:"*) ;;
+  *) export PATH="${BLAZIUM}/bin:${PATH}" ;;
+esac
+EOF
+fi
 had_handler=0
 if [ -x /opt/blazium/bin/blazium-cli ] || [ -x /opt/blazium/engine/blazium-hub ] || command -v blazium-cli >/dev/null 2>&1; then
   had_handler=1

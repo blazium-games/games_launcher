@@ -285,8 +285,8 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  Command, Owner: String;
-  CliRemains, HubInstalled: Boolean;
+  Command, Owner, CliPath: String;
+  HubInstalled, CliExists, ChauffeurExists: Boolean;
 begin
   if CurUninstallStep = usUninstall then
   begin
@@ -296,23 +296,26 @@ begin
   if CurUninstallStep <> usPostUninstall then
     exit;
   HubInstalled := FileExists(AddBackslash(SharedRoot) + 'Engine\BlaziumHub.exe');
+  CliPath := AddBackslash(SharedRoot) + 'blazium-cli.exe';
   if not HubInstalled then
-    DeleteFile(AddBackslash(SharedRoot) + 'blazium-cli.exe');
-  CliRemains := FileExists(AddBackslash(SharedRoot) + 'blazium-cli.exe') or HubInstalled;
-  if not CliRemains then
+    DeleteFile(CliPath);
+  CliExists := FileExists(CliPath);
+  ChauffeurExists := FileExists(AddBackslash(SharedRoot) + 'chauffeur.exe');
+  if not HubInstalled and not CliExists and not ChauffeurExists then
   begin
     EnvRemovePath(SharedRoot);
-    if not FileExists(AddBackslash(SharedRoot) + 'chauffeur.exe') then
-      RegDeleteValue(HKLM, EnvironmentKey, 'BLAZIUM');
+    RegDeleteValue(HKLM, EnvironmentKey, 'BLAZIUM');
+  end;
+  if RegQueryStringValue(HKCR, 'blazium\shell\open\command', '', Command) then
+  begin
+    if (Pos('BlaziumLauncher.exe', Command) > 0) and CliExists then
+      RegWriteStringValue(HKCR, 'blazium\shell\open\command', '', '"' + CliPath + '" handle-uri "%1"')
+    else if (Pos('BlaziumLauncher.exe', Command) > 0) and not CliExists then
+      RegDeleteKeyIncludingSubkeys(HKCR, 'blazium');
   end;
   if RegQueryStringValue(HKLM, ProtocolOwnerKey, 'ProtocolOwner', Owner) or
      RegQueryStringValue(HKLM, 'SOFTWARE\Blazium Games', 'ProtocolOwner', Owner) then
   begin
-    if RegQueryStringValue(HKCR, 'blazium\shell\open\command', '', Command) then
-    begin
-      if (Pos('BlaziumLauncher.exe', Command) > 0) and not FileExists(AddBackslash(SharedRoot) + 'blazium-cli.exe') then
-        RegDeleteKeyIncludingSubkeys(HKCR, 'blazium');
-    end;
     RegDeleteKeyIncludingSubkeys(HKLM, ProtocolOwnerKey);
     RegDeleteKeyIncludingSubkeys(HKLM, 'SOFTWARE\Blazium Games');
   end;

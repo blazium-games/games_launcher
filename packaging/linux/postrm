@@ -7,7 +7,18 @@ fi
 rm -rf /opt/blazium/games
 rm -f /opt/blazium/bin/chauffeur /usr/bin/chauffeur
 if [ ! -x /opt/blazium/engine/blazium-hub ]; then
-  rm -f /opt/blazium/bin/blazium-cli
+  rm -f /opt/blazium/bin/blazium-cli /opt/blazium/bin/blazium
+  rm -f /usr/bin/blazium-cli /usr/bin/blazium
+fi
+if [ -x /opt/blazium/engine/blazium-hub ]; then
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+  fi
+  if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default blazium-uri.desktop x-scheme-handler/blazium >/dev/null 2>&1 || true
+  fi
+elif [ ! -x /opt/blazium/bin/blazium-cli ] && [ ! -x /opt/blazium/bin/chauffeur ]; then
+  rm -f /etc/profile.d/blazium.sh
 fi
 rmdir /opt/blazium/bin 2>/dev/null || true
 rmdir /opt/blazium 2>/dev/null || true

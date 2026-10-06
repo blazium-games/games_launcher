@@ -324,7 +324,11 @@ jobs:
           print(f"Wrote {out} with {len(downloads)} download(s)")
           PY
           mapfile -t files < <(find dist -type f)
-          gh release create "$tag" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Blazium Games launcher" --notes "Installer artifacts for ${GITHUB_SHA}."
+          if gh release view "$tag" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Blazium Games launcher" --notes "Installer artifacts for ${GITHUB_SHA}."
+          fi
       - name: Spaces upload when credentials exist
         env:
           DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}

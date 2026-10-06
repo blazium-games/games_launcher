@@ -239,7 +239,10 @@ jobs:
           curl -fsSL -o /tmp/nfpm.tar.gz https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz
           tar -C /tmp -xzf /tmp/nfpm.tar.gz nfpm
           mkdir -p dist
-          /tmp/nfpm package --config packaging/linux/nfpm.yaml --packager deb --target "dist/blazium-games_${VERSION}_amd64.deb"
+          cd packaging/linux
+          envsubst '${SOURCE_DIR} ${VERSION} ${NFPM_ARCH}' < nfpm.yaml > nfpm.generated.yaml
+          /tmp/nfpm package --config nfpm.generated.yaml --packager deb --target "${GITHUB_WORKSPACE}/dist/blazium-games_${VERSION}_amd64.deb"
+          cd "${GITHUB_WORKSPACE}"
           test -f "dist/blazium-games_${VERSION}_amd64.deb"
       - name: Sign deb when the key exists
         if: steps.linux-export.outcome == 'success'

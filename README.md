@@ -31,22 +31,3 @@ Export templates are not in this repo. The installer is how you run it.
 ## License
 
 Licensed under the MIT License — see [LICENSE](LICENSE).
-
-## Environment inventory
-
-`env.example` lists every variable this service reads, every DigitalOcean secret name, and every GitHub Actions secret name. Local runs load `.env` in this directory. The workspace-root `.env` is a sectioned copy of these files; the process does not load it.
-
-| Variable |
-|----------|
-| `CREDENTIAL_ID` |
-| `DO_ACCESS_KEY` |
-| `DO_SECRET_KEY` |
-| `DO_SPACE_NAME` |
-| `DO_SPACE_REGION` |
-| `ES_PASSWORD` |
-| `ES_TOTP_SECRET` |
-| `ES_USERNAME` |
-| `GAMES_MODULE_READ_TOKEN` |
-| `GPG_PRIVATE_KEY` |
-| `PRODUCTION_ENV` |
-<!-- env-inventory-end -->

@@ -176,7 +176,7 @@ jobs:
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           & $iscc "/DMyAppVersion=0.1.0" "packaging\windows\blazium-games.iss"
           if (-not (Test-Path "packaging\windows\Output\BlaziumLauncher-Setup-0.1.0.exe")) { exit 1 }
-      - name: Signing secrets present
+      - name: Sign Windows installer
         id: sign
         shell: bash
         env:
@@ -193,7 +193,7 @@ jobs:
           [ -z "${ES_TOTP_SECRET}" ] && missing="${missing} ES_TOTP_SECRET"
           if [ -n "$missing" ]; then
             echo "sign=false" >> "$GITHUB_OUTPUT"
-            echo "Signing skipped. Missing:${missing}. Publishing the unsigned installer."
+            echo "Signing skipped. Publishing the unsigned installer."
           else
             echo "sign=true" >> "$GITHUB_OUTPUT"
           fi
@@ -253,7 +253,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GPG_PRIVATE_KEY}" ]; then
-            echo "GPG_PRIVATE_KEY is missing. Publishing the unsigned deb."
+            echo "Signing skipped. Publishing the unsigned package."
             exit 0
           fi
           umask 077
@@ -334,7 +334,7 @@ jobs:
           else
             gh release create "$tag" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Blazium Games launcher" --notes "Installer artifacts for ${GITHUB_SHA}."
           fi
-      - name: Spaces upload when credentials exist
+      - name: Publish download files
         env:
           DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
           DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
@@ -348,7 +348,7 @@ jobs:
           [ -z "${DO_SPACE_NAME}" ] && missing="${missing} DO_SPACE_NAME"
           [ -z "${DO_SPACE_REGION}" ] && missing="${missing} DO_SPACE_REGION"
           if [ -n "$missing" ]; then
-            echo "Spaces upload skipped. Missing:${missing}."
+            echo "Publish skipped."
             exit 0
           fi
-          echo "Spaces credentials are present. Upload stays on the GitHub release until a catalog path is added."
+          echo "Publish skipped. The release already has the files."

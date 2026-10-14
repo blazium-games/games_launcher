@@ -339,6 +339,8 @@ func _extract_zip(zip_path: String, dest_dir: String) -> bool:
 	var root := dest_dir.simplify_path()
 	DirAccess.make_dir_recursive_absolute(root)
 	var ok := true
+	var uncompressed := 0
+	const max_uncompressed := 512 * 1024 * 1024
 	for name in reader.get_files():
 		if not _zip_entry_ok(str(name)):
 			continue
@@ -351,6 +353,10 @@ func _extract_zip(zip_path: String, dest_dir: String) -> bool:
 			continue
 		DirAccess.make_dir_recursive_absolute(out.get_base_dir())
 		var bytes: PackedByteArray = reader.read_file(name)
+		uncompressed += bytes.size()
+		if uncompressed > max_uncompressed:
+			reader.close()
+			return false
 		var out_file := FileAccess.open(out, FileAccess.WRITE)
 		if out_file == null:
 			ok = false

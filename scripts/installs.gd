@@ -104,8 +104,12 @@ func uninstall(game_uid: String) -> void:
 	if is_running(game_uid):
 		OS.kill(int(_procs[game_uid]))
 		_procs.erase(game_uid)
-	var dir := game_dir(game_uid)
-	_remove_dir(dir)
+	var overlay := _overlay_marker(game_uid)
+	if FileAccess.file_exists(overlay):
+		var target := FileAccess.get_file_as_string(overlay).strip_edges()
+		if _overlay_target_ok(target):
+			_remove_dir(target)
+	_remove_dir(game_dir(game_uid))
 	changed.emit(game_uid)
 
 
@@ -161,7 +165,27 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 	if url.is_empty():
 		return {"ok": false, "error": str(link.get("error", "No download url"))}
 	var filename := str(link.get("filename", file_uid))
+	var listing := Session.files(game_uid)
+	var settings: Dictionary = listing.get("mod_settings", {}) if listing.get("mod_settings") is Dictionary else {}
+	var loader := str(settings.get("loader", "")).strip_edges()
+	var install_path := str(settings.get("install_path", "")).strip_edges()
 	DirAccess.make_dir_recursive_absolute(game_dir(game_uid))
+	if loader != "" and install_path != "":
+		var parent: Dictionary = listing.get("parent", {}) if listing.get("parent") is Dictionary else {}
+		var parent_uid := str(parent.get("uid", ""))
+		if parent_uid == "" or not is_installed(parent_uid):
+			return {"ok": false, "error": "The parent game is not installed"}
+		var target := _overlay_dir(parent_uid, install_path)
+		if target == "":
+			return {"ok": false, "error": "The install path is not valid"}
+		return {
+			"ok": true,
+			"url": url,
+			"dest": game_dir(game_uid).path_join(filename),
+			"game_uid": game_uid,
+			"overlay": true,
+			"overlay_dir": target,
+		}
 	return {"ok": true, "url": url, "dest": game_dir(game_uid).path_join(filename), "game_uid": game_uid}
 
 
@@ -177,6 +201,24 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "Could not write the file"}
 	f.store_buffer(body)
 	f.close()
+	if bool(prepared.get("overlay", false)):
+		var target := str(prepared.get("overlay_dir", ""))
+		if not _extract_zip(dest, target):
+			DirAccess.remove_absolute(dest)
+			return {"ok": false, "error": "Could not extract the mod"}
+		DirAccess.remove_absolute(dest)
+		var note := FileAccess.open(_overlay_marker(game_uid), FileAccess.WRITE)
+		if note == null:
+			return {"ok": false, "error": "Could not record the install"}
+		note.store_string(target)
+		note.close()
+		var marker := FileAccess.open(_marker(game_uid), FileAccess.WRITE)
+		if marker != null:
+			marker.store_string(target)
+			marker.close()
+		changed.emit(game_uid)
+		progress.emit(game_uid, body.size(), body.size())
+		return {"ok": true, "path": target, "status": "installed"}
 	var marker := FileAccess.open(_marker(game_uid), FileAccess.WRITE)
 	if marker != null:
 		marker.store_string(dest)
@@ -251,6 +293,72 @@ func pick_file(game_uid: String, channel: String) -> String:
 
 func _marker(game_uid: String) -> String:
 	return game_dir(game_uid).path_join("installed.path")
+
+
+func _overlay_marker(game_uid: String) -> String:
+	return game_dir(game_uid).path_join("installed.overlay")
+
+
+func _overlay_dir(parent_uid: String, install_path: String) -> String:
+	var clean := install_path.replace("\\", "/").strip_edges()
+	if clean == "" or clean.begins_with("/") or clean.contains("..") or clean.contains(":"):
+		return ""
+	var parts := clean.split("/", false)
+	var rel := ""
+	for part in parts:
+		if part == "" or part == "." or part == "..":
+			return ""
+		rel = part if rel == "" else rel.path_join(part)
+	var root := game_dir(parent_uid).simplify_path()
+	var target := root.path_join(rel).simplify_path()
+	if target == root or not target.begins_with(root + "/"):
+		return ""
+	return target
+
+
+func _overlay_target_ok(target: String) -> bool:
+	var clean := target.simplify_path()
+	var library := root_dir().simplify_path()
+	if clean == "" or clean == library or not clean.begins_with(library + "/"):
+		return false
+	var rest := clean.substr(library.length() + 1)
+	return rest.find("/") >= 0
+
+
+func _zip_entry_ok(name: String) -> bool:
+	var rel := name.replace("\\", "/")
+	if rel.begins_with("/") or rel.contains("..") or rel.contains(":"):
+		return false
+	return rel != ""
+
+
+func _extract_zip(zip_path: String, dest_dir: String) -> bool:
+	var reader := ZIPReader.new()
+	if reader.open(zip_path) != OK:
+		return false
+	var root := dest_dir.simplify_path()
+	DirAccess.make_dir_recursive_absolute(root)
+	var ok := true
+	for name in reader.get_files():
+		if not _zip_entry_ok(str(name)):
+			continue
+		var rel := str(name).replace("\\", "/")
+		if rel.ends_with("/"):
+			DirAccess.make_dir_recursive_absolute(root.path_join(rel.trim_suffix("/")))
+			continue
+		var out := root.path_join(rel).simplify_path()
+		if out == root or not out.begins_with(root + "/"):
+			continue
+		DirAccess.make_dir_recursive_absolute(out.get_base_dir())
+		var bytes: PackedByteArray = reader.read_file(name)
+		var out_file := FileAccess.open(out, FileAccess.WRITE)
+		if out_file == null:
+			ok = false
+			continue
+		out_file.store_buffer(bytes)
+		out_file.close()
+	reader.close()
+	return ok
 
 
 func _remove_dir(path: String) -> void:

@@ -111,12 +111,12 @@ def main() -> int:
         if got.lower() == expected.lower():
             print(f"sha256 ok: {got}")
         else:
-            # cli.json digests can lag CDN re-signs; require a plausible binary payload.
             print(
-                f"WARNING: sha256 mismatch (catalog={expected}, got={got}; "
-                f"size catalog={expected_size}, got={len(data)}); continuing",
+                f"sha256 mismatch (catalog={expected}, got={got}; "
+                f"size catalog={expected_size}, got={len(data)})",
                 file=sys.stderr,
             )
+            return 1
     if len(data) < 1_000_000:
         print(f"downloaded CLI too small ({len(data)} bytes)", file=sys.stderr)
         return 1

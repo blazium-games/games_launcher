@@ -192,14 +192,12 @@ jobs:
           [ -z "${CREDENTIAL_ID}" ] && missing="${missing} CREDENTIAL_ID"
           [ -z "${ES_TOTP_SECRET}" ] && missing="${missing} ES_TOTP_SECRET"
           if [ -n "$missing" ]; then
-            echo "sign=false" >> "$GITHUB_OUTPUT"
-            echo "Signing skipped. Publishing the unsigned installer."
-          else
-            echo "sign=true" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets are missing:${missing}" >&2
+            exit 1
           fi
+          echo "sign=true" >> "$GITHUB_OUTPUT"
       - uses: bioblaze/sslcom-code-signer@v6
         if: steps.sign.outputs.sign == 'true'
-        continue-on-error: true
         with:
           command: sign
           username: ${{ secrets.ES_USERNAME }}

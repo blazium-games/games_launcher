@@ -212,8 +212,10 @@ begin
     '$ver = [string]$m.latest; ' +
     '$entry = $m.versions.PSObject.Properties[$ver].Value; ' +
     '$d = $entry.downloads | Where-Object { $_.platform -eq ''windows'' -and ($_.arch -eq ''x86_64'' -or $_.arch -eq ''amd64'') } | Select-Object -First 1; ' +
-    'if (-not $d.download_url) { exit 1 }; ' +
-    'Invoke-WebRequest -UseBasicParsing -Uri $d.download_url -OutFile ''' + SetupPath + '''') then
+    'if (-not $d.download_url -or -not $d.sha256) { exit 1 }; ' +
+    'Invoke-WebRequest -UseBasicParsing -Uri $d.download_url -OutFile ''' + SetupPath + '''; ' +
+    '$got = (Get-FileHash -Algorithm SHA256 -Path ''' + SetupPath + ''').Hash; ' +
+    'if ($got.ToLower() -ne ([string]$d.sha256).ToLower()) { exit 1 }') then
     exit;
   if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     if (ResultCode = 0) and FileExists(SetupPath) then

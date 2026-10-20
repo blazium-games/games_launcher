@@ -185,8 +185,9 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 			"game_uid": game_uid,
 			"overlay": true,
 			"overlay_dir": target,
+			"checksum": str(link.get("checksum", "")),
 		}
-	return {"ok": true, "url": url, "dest": game_dir(game_uid).path_join(filename), "game_uid": game_uid}
+	return {"ok": true, "url": url, "dest": game_dir(game_uid).path_join(filename), "game_uid": game_uid, "checksum": str(link.get("checksum", ""))}
 
 
 func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
@@ -201,6 +202,15 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "Could not write the file"}
 	f.store_buffer(body)
 	f.close()
+	var want := str(prepared.get("checksum", "")).strip_edges().to_lower()
+	if want != "":
+		var ctx := HashingContext.new()
+		ctx.start(HashingContext.HASH_SHA256)
+		ctx.update(body)
+		var got := ctx.finish().hex_encode().to_lower()
+		if got != want:
+			DirAccess.remove_absolute(dest)
+			return {"ok": false, "error": "The download checksum does not match"}
 	if bool(prepared.get("overlay", false)):
 		var target := str(prepared.get("overlay_dir", ""))
 		if not _extract_zip(dest, target):

@@ -63,7 +63,7 @@ func _on_login_url(url: String) -> void:
 	login_url = url
 	login_url_ready.emit(url)
 	if not url.is_empty():
-		OS.shell_open(url)
+		External.open(url)
 
 
 func _on_login_state(state: int, error: String) -> void:

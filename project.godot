@@ -26,6 +26,7 @@ run/low_processor_mode=true
 
 [autoload]
 
+External="*res://scripts/external.gd"
 Session="*res://scripts/session.gd"
 Installs="*res://scripts/installs.gd"
 Confirm="*res://scripts/confirm.gd"

@@ -80,7 +80,7 @@ func _run(args: Dictionary, name: String) -> Dictionary:
 				var created := Session.create_top_up(int(args.get("amount_cents", 0)))
 				var url := str(created.get("checkout_url", ""))
 				if not url.is_empty():
-					OS.shell_open(url)
+					External.open(url)
 				Shell.poll_top_up(str(created.get("top_up_uid", "")))
 			)
 		"redeem":

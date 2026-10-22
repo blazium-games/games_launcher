@@ -75,6 +75,20 @@ func compare_versions(a: String, b: String) -> int:
 	return 0
 
 
+func _has_hash(item: Dictionary) -> bool:
+	var digest := str(item.get("sha256", "")).strip_edges().to_lower()
+	if digest.begins_with("sha256:"):
+		digest = digest.trim_prefix("sha256:")
+	if digest.length() != 64:
+		return false
+	for i in digest.length():
+		var ch := digest.unicode_at(i)
+		var hex := (ch >= 48 and ch <= 57) or (ch >= 97 and ch <= 102)
+		if not hex:
+			return false
+	return true
+
+
 func update_is_upgrade(latest: String, current: String) -> bool:
 	if latest.strip_edges().is_empty() or current.strip_edges().is_empty():
 		return false
@@ -174,6 +188,8 @@ func _find_product_status(products: Array, name: String) -> Variant:
 		if not str(item.get("error", "")).is_empty():
 			continue
 		if not update_is_upgrade(str(item.get("latest_version", "")), _version_floor(item)):
+			continue
+		if not _has_hash(item):
 			continue
 		return item
 	return null

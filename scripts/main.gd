@@ -197,7 +197,7 @@ func _wallet() -> void:
 			if url.is_empty():
 				_status.text = _err(created)
 				return
-			OS.shell_open(url)
+			External.open(url)
 			_watch_top_up(str(created.get("top_up_uid", "")))
 		)
 	)
@@ -483,7 +483,7 @@ func _quote_actions(uid: String, kind: String, amount: int, title: String, detai
 				_status.text = _err(created)
 				return
 			_after_pay = {"game": uid, "kind": kind, "amount": price, "total": total, "bought": false}
-			OS.shell_open(url)
+			External.open(url)
 			_watch_top_up(str(created.get("top_up_uid", "")))
 		)
 	)

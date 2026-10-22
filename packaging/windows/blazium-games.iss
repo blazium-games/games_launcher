@@ -51,7 +51,9 @@ Source: "{#MyAppSourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignorevers
 Source: "{#MyAppSourceDir}\crash_reporter.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyAppSourceDir}\chauffeur.exe"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion
 Source: "{#MyAppSourceDir}\blazium-cli.exe"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
+Source: "{#MyAppSourceDir}\blazium-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "games.cmd"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion uninsneveruninstall
+Source: "select_hub.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -194,37 +196,30 @@ end;
 
 function HubSetupFromManifest: String;
 var
-  JsonPath, SetupPath, ScriptPath: String;
+  SetupPath, VersionPath, FloorPath, ScriptPath: String;
   ResultCode: Integer;
 begin
   Result := '';
-  JsonPath := ExpandConstant('{tmp}\hub.json');
   SetupPath := ExpandConstant('{tmp}\BlaziumHub-Setup.exe');
-  if not DownloadToFile('https://cdn.blazium.app/hub/hub.json', JsonPath) then
+  VersionPath := ExpandConstant('{tmp}\hub.version');
+  FloorPath := ExpandConstant('{autopf}\Blazium\hub.version');
+  ScriptPath := ExpandConstant('{app}\select_hub.ps1');
+  if not FileExists(ScriptPath) then
   begin
-    Log('Could not download hub.json');
+    Log('select_hub.ps1 is missing');
     exit;
   end;
-  ScriptPath := ExpandConstant('{tmp}\blazium-hub-pick.ps1');
-  if not SaveText(ScriptPath,
-    '$ProgressPreference = ''SilentlyContinue''; ' +
-    '$m = Get-Content -Raw ''' + JsonPath + ''' | ConvertFrom-Json; ' +
-    '$ver = [string]$m.latest; ' +
-    '$entry = $m.versions.PSObject.Properties[$ver].Value; ' +
-    '$d = $entry.downloads | Where-Object { $_.platform -eq ''windows'' -and ($_.arch -eq ''x86_64'' -or $_.arch -eq ''amd64'') } | Select-Object -First 1; ' +
-    'if (-not $d.download_url -or -not $d.sha256) { exit 1 }; ' +
-    'Invoke-WebRequest -UseBasicParsing -Uri $d.download_url -OutFile ''' + SetupPath + '''; ' +
-    '$got = (Get-FileHash -Algorithm SHA256 -Path ''' + SetupPath + ''').Hash; ' +
-    'if ($got.ToLower() -ne ([string]$d.sha256).ToLower()) { exit 1 }') then
+  if not Exec('powershell.exe',
+    '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '" -OutFile "' + SetupPath + '" -VersionFile "' + VersionPath + '" -FloorFile "' + FloorPath + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     exit;
-  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    if (ResultCode = 0) and FileExists(SetupPath) then
-      Result := SetupPath;
+  if (ResultCode = 0) and FileExists(SetupPath) then
+    Result := SetupPath;
 end;
 
 procedure InstallHubNow;
 var
-  Setup, Args: String;
+  Setup, Args, VersionPath, FloorPath: String;
   ResultCode: Integer;
 begin
   Setup := HubSetup;
@@ -237,7 +232,17 @@ begin
   end;
   Args := '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="' + SharedRoot + '"';
   Log('Running BlaziumHub setup ' + Setup);
-  Exec(Setup, Args, '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+  ResultCode := 1;
+  if Exec(Setup, Args, '', SW_SHOW, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+  begin
+    VersionPath := ExpandConstant('{tmp}\hub.version');
+    FloorPath := ExpandConstant('{autopf}\Blazium\hub.version');
+    if FileExists(VersionPath) then
+    begin
+      ForceDirectories(ExtractFilePath(FloorPath));
+      FileCopy(VersionPath, FloorPath, False);
+    end;
+  end;
   Log('BlaziumHub setup exit=' + IntToStr(ResultCode));
 end;
 

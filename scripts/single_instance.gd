@@ -52,6 +52,14 @@ func _handle(msg: String) -> void:
 		UriRouter.open_uri(msg)
 
 
+func command_message(args: PackedStringArray) -> String:
+	for arg in args:
+		var text := str(arg).strip_edges()
+		if text.begins_with("blazium://") and text.length() < 2048:
+			return text
+	return "SHOW"
+
+
 func _forward_and_quit() -> void:
 	var peer := StreamPeerTCP.new()
 	peer.connect_to_host(HOST, PORT)
@@ -60,12 +68,7 @@ func _forward_and_quit() -> void:
 		peer.poll()
 		OS.delay_msec(20)
 		ticks += 1
-	var msg := "SHOW"
-	for arg in OS.get_cmdline_user_args() + OS.get_cmdline_args():
-		var text := str(arg)
-		if text.begins_with("blazium://"):
-			msg = text
-			break
+	var msg := command_message(OS.get_cmdline_user_args() + OS.get_cmdline_args())
 	if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
 		peer.put_data(msg.to_utf8_buffer())
 	get_tree().quit(0)

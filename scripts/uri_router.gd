@@ -72,9 +72,9 @@ func _consumer(host: String, path: String, query: String) -> Dictionary:
 		"install":
 			if not _uid(path):
 				return {"ok": false, "error": "That game id is not valid"}
-			var channel := _query(query, "channel")
-			if channel != "" and channel != "stable" and channel != "beta":
-				return {"ok": false, "error": "Channel must be stable or beta"}
+			var channel := _query(query, "channel").strip_edges().to_lower()
+			if channel != "" and not Installs.allowed_channel(channel):
+				return {"ok": false, "error": "Channel must be stable, beta, dev, or custom"}
 			return {"ok": true, "host": host, "uid": path, "channel": channel}
 		"search":
 			return {"ok": true, "host": host, "q": _query(query, "q")}

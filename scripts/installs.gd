@@ -4,6 +4,8 @@ extends Node
 signal progress(game_uid: String, received: int, total: int)
 signal changed(game_uid: String)
 
+const CHANNELS := ["stable", "beta", "dev", "custom"]
+
 var _procs: Dictionary = {}
 var _http: HTTPRequest
 
@@ -169,6 +171,10 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 	var settings: Dictionary = listing.get("mod_settings", {}) if listing.get("mod_settings") is Dictionary else {}
 	var loader := str(settings.get("loader", "")).strip_edges()
 	var install_path := str(settings.get("install_path", "")).strip_edges()
+	var row := _file_row(listing, file_uid)
+	var channel := str(row.get("channel", "")).strip_edges().to_lower()
+	if channel == "" or not CHANNELS.has(channel):
+		channel = "stable"
 	DirAccess.make_dir_recursive_absolute(game_dir(game_uid))
 	if loader != "" and install_path != "":
 		var parent: Dictionary = listing.get("parent", {}) if listing.get("parent") is Dictionary else {}
@@ -186,8 +192,20 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 			"overlay": true,
 			"overlay_dir": target,
 			"checksum": str(link.get("checksum", "")),
+			"file_uid": file_uid,
+			"build_id": str(row.get("build_id", "")),
+			"channel": channel,
 		}
-	return {"ok": true, "url": url, "dest": game_dir(game_uid).path_join(filename), "game_uid": game_uid, "checksum": str(link.get("checksum", ""))}
+	return {
+		"ok": true,
+		"url": url,
+		"dest": game_dir(game_uid).path_join(filename),
+		"game_uid": game_uid,
+		"checksum": str(link.get("checksum", "")),
+		"file_uid": file_uid,
+		"build_id": str(row.get("build_id", "")),
+		"channel": channel,
+	}
 
 
 func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
@@ -197,20 +215,17 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 	var body: PackedByteArray = fetched.get("body", PackedByteArray())
 	if code < 200 or code >= 300:
 		return {"ok": false, "error": "Download failed (%s)" % code}
+	var want := checksum_hex(str(prepared.get("checksum", "")))
+	if want == "":
+		return {"ok": false, "error": "The download has no checksum"}
+	var got := _sha256_hex(body)
+	if got != want:
+		return {"ok": false, "error": "The download checksum does not match"}
 	var f := FileAccess.open(dest, FileAccess.WRITE)
 	if f == null:
 		return {"ok": false, "error": "Could not write the file"}
 	f.store_buffer(body)
 	f.close()
-	var want := str(prepared.get("checksum", "")).strip_edges().to_lower()
-	if want != "":
-		var ctx := HashingContext.new()
-		ctx.start(HashingContext.HASH_SHA256)
-		ctx.update(body)
-		var got := ctx.finish().hex_encode().to_lower()
-		if got != want:
-			DirAccess.remove_absolute(dest)
-			return {"ok": false, "error": "The download checksum does not match"}
 	if bool(prepared.get("overlay", false)):
 		var target := str(prepared.get("overlay_dir", ""))
 		if not _extract_zip(dest, target):
@@ -226,6 +241,7 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 		if marker != null:
 			marker.store_string(target)
 			marker.close()
+		_write_record(game_uid, prepared, target)
 		changed.emit(game_uid)
 		progress.emit(game_uid, body.size(), body.size())
 		return {"ok": true, "path": target, "status": "installed"}
@@ -233,6 +249,7 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 	if marker != null:
 		marker.store_string(dest)
 		marker.close()
+	_write_record(game_uid, prepared, dest)
 	changed.emit(game_uid)
 	progress.emit(game_uid, body.size(), body.size())
 	return {"ok": true, "path": dest, "status": "installed"}
@@ -277,12 +294,28 @@ func _download_now(url: String, game_uid: String) -> Dictionary:
 	return {"code": client.get_response_code(), "body": body}
 
 
-func pick_file(game_uid: String, channel: String) -> String:
-	var body := Session.files(game_uid)
-	var rows = body.get("files", [])
-	if not (rows is Array):
+func os_name() -> String:
+	return "windows" if OS.get_name() == "Windows" else "linux"
+
+
+func allowed_channel(channel: String) -> bool:
+	return CHANNELS.has(channel.strip_edges().to_lower())
+
+
+func resolve_channel(channel: String, listing_channel: String = "") -> String:
+	var chosen := channel.strip_edges().to_lower()
+	if chosen.is_empty():
+		chosen = listing_channel.strip_edges().to_lower()
+	if chosen.is_empty():
+		return "stable"
+	if not CHANNELS.has(chosen):
 		return ""
-	var os_name := "windows" if OS.get_name() == "Windows" else "linux"
+	return chosen
+
+
+func pick_from_rows(rows: Variant, channel: String, host_os: String) -> String:
+	if not (rows is Array) or not CHANNELS.has(channel):
+		return ""
 	var fallback := ""
 	for row in rows:
 		if not (row is Dictionary):
@@ -290,15 +323,137 @@ func pick_file(game_uid: String, channel: String) -> String:
 		if not bool(row.get("downloadable", false)):
 			continue
 		var uid := str(row.get("file_uid", ""))
-		if str(row.get("os", "")).to_lower() != os_name:
+		if uid.is_empty():
 			continue
-		if channel != "" and str(row.get("channel", "")).to_lower() != channel:
+		if str(row.get("os", "")).to_lower() != host_os:
+			continue
+		if str(row.get("channel", "")).to_lower() != channel:
 			continue
 		if bool(row.get("latest", false)):
 			return uid
 		if fallback.is_empty():
 			fallback = uid
 	return fallback
+
+
+func pick_file(game_uid: String, channel: String) -> String:
+	var body := Session.files(game_uid)
+	var chosen := resolve_channel(channel, str(body.get("channel", "")))
+	if chosen.is_empty():
+		return ""
+	return pick_from_rows(body.get("files", []), chosen, os_name())
+
+
+func plan_update(record: Dictionary, listing: Dictionary, host_os: String) -> Dictionary:
+	var chosen := resolve_channel(str(record.get("channel", "")), str(listing.get("channel", "")))
+	if chosen.is_empty():
+		return {}
+	var latest := pick_from_rows(listing.get("files", []), chosen, host_os)
+	if latest.is_empty() or latest == str(record.get("file_uid", "")):
+		return {}
+	var build_id := ""
+	var rows = listing.get("files", [])
+	if rows is Array:
+		for row in rows:
+			if row is Dictionary and str(row.get("file_uid", "")) == latest:
+				build_id = str(row.get("build_id", ""))
+				break
+	return {"file_uid": latest, "build_id": build_id, "channel": chosen}
+
+
+func offer_for(game_uid: String) -> Dictionary:
+	if not is_installed(game_uid):
+		return {}
+	return plan_update(read_record(game_uid), Session.files(game_uid), os_name())
+
+
+func pending_update_count() -> int:
+	if not Session.is_authenticated():
+		return 0
+	var count := 0
+	var host_os := os_name()
+	for game_uid in installed_game_uids():
+		if not plan_update(read_record(game_uid), Session.files(game_uid), host_os).is_empty():
+			count += 1
+	return count
+
+
+func installed_game_uids() -> PackedStringArray:
+	var ids: PackedStringArray = []
+	var dir := DirAccess.open(root_dir())
+	if dir == null:
+		return ids
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if dir.current_is_dir() and name != "." and name != "..":
+			if FileAccess.file_exists(_marker(name)):
+				ids.append(name)
+		name = dir.get_next()
+	dir.list_dir_end()
+	return ids
+
+
+func read_record(game_uid: String) -> Dictionary:
+	var path := record_path(game_uid)
+	if not FileAccess.file_exists(path):
+		return {}
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if parsed is Dictionary:
+		return parsed
+	return {}
+
+
+func record_path(game_uid: String) -> String:
+	return game_dir(game_uid).path_join("installed.json")
+
+
+func checksum_hex(raw: String) -> String:
+	var text := raw.strip_edges().to_lower()
+	if text.begins_with("sha256:"):
+		text = text.substr(7).strip_edges()
+	if text.length() != 64:
+		return ""
+	for i in text.length():
+		var ch := text.unicode_at(i)
+		var ok := (ch >= 48 and ch <= 57) or (ch >= 97 and ch <= 102)
+		if not ok:
+			return ""
+	return text
+
+
+func _sha256_hex(body: PackedByteArray) -> String:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	ctx.update(body)
+	return ctx.finish().hex_encode().to_lower()
+
+
+func _file_row(listing: Dictionary, file_uid: String) -> Dictionary:
+	var rows = listing.get("files", [])
+	if not (rows is Array):
+		return {}
+	for row in rows:
+		if row is Dictionary and str(row.get("file_uid", "")) == file_uid:
+			return row
+	return {}
+
+
+func _write_record(game_uid: String, prepared: Dictionary, path: String) -> void:
+	var channel := str(prepared.get("channel", "")).strip_edges().to_lower()
+	if not CHANNELS.has(channel):
+		channel = "stable"
+	var record := {
+		"file_uid": str(prepared.get("file_uid", "")),
+		"build_id": str(prepared.get("build_id", "")),
+		"channel": channel,
+		"path": path,
+	}
+	var out := FileAccess.open(record_path(game_uid), FileAccess.WRITE)
+	if out == null:
+		return
+	out.store_string(JSON.stringify(record))
+	out.close()
 
 
 func _marker(game_uid: String) -> String:

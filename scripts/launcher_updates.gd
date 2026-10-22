@@ -38,6 +38,56 @@ func launcher_version() -> String:
 	return str(ProjectSettings.get_setting("application/config/version", ""))
 
 
+func _version_parts(text: String) -> Array:
+	var raw := text.strip_edges()
+	if raw.is_empty():
+		return []
+	if raw.begins_with("v") and raw.length() > 1 and raw.substr(1, 1).is_valid_int():
+		raw = raw.substr(1)
+	var core := raw.split("-")[0].split("+")[0]
+	var parts: Array = []
+	for piece in core.split("."):
+		if piece.is_empty() or not piece.is_valid_int():
+			return []
+		parts.append(int(piece))
+	return parts
+
+
+func compare_versions(a: String, b: String) -> int:
+	var pa := _version_parts(a)
+	var pb := _version_parts(b)
+	if pa.is_empty() or pb.is_empty():
+		return -2
+	var width := pa.size()
+	if pb.size() > width:
+		width = pb.size()
+	for i in width:
+		var av := 0
+		var bv := 0
+		if i < pa.size():
+			av = int(pa[i])
+		if i < pb.size():
+			bv = int(pb[i])
+		if av < bv:
+			return -1
+		if av > bv:
+			return 1
+	return 0
+
+
+func update_is_upgrade(latest: String, current: String) -> bool:
+	if latest.strip_edges().is_empty() or current.strip_edges().is_empty():
+		return false
+	return compare_versions(latest, current) == 1
+
+
+func _version_floor(item: Dictionary) -> String:
+	var current := str(item.get("current_version", "")).strip_edges()
+	if current.is_empty() and str(item.get("product", "")) == "launcher":
+		current = launcher_version()
+	return current
+
+
 func install_dir() -> String:
 	return OS.get_executable_path().get_base_dir()
 
@@ -123,6 +173,8 @@ func _find_product_status(products: Array, name: String) -> Variant:
 			continue
 		if not str(item.get("error", "")).is_empty():
 			continue
+		if not update_is_upgrade(str(item.get("latest_version", "")), _version_floor(item)):
+			continue
 		return item
 	return null
 
@@ -176,6 +228,12 @@ func _on_declined() -> void:
 func _on_accepted() -> void:
 	var product := str(_pending.get("product", ""))
 	var latest := str(_pending.get("latest_version", ""))
+	if not update_is_upgrade(latest, _version_floor(_pending)):
+		_last_summary = "Refusing a downgrade"
+		status_changed.emit(_last_summary)
+		_pending = {}
+		call_deferred("_show_next")
+		return
 	status_changed.emit("Updating %s…" % str(PRODUCT_LABELS.get(product, product)))
 	var ok := false
 	match product:
@@ -223,29 +281,22 @@ func _on_accepted() -> void:
 
 
 func resolve_cli() -> String:
-	var is_win := OS.get_name() == "Windows"
-	var names: PackedStringArray = ["blazium-cli.exe"] if is_win else ["blazium-cli"]
-	var candidates: PackedStringArray = []
-	var blazium := OS.get_environment("BLAZIUM").strip_edges()
-	if not blazium.is_empty():
-		for name in names:
-			candidates.append(blazium.path_join(name))
-			candidates.append(blazium.path_join("bin").path_join(name))
-	var exe_dir := OS.get_executable_path().get_base_dir()
-	var parent := exe_dir.get_base_dir()
-	for root in [parent, exe_dir]:
-		if root.is_empty():
-			continue
-		for name in names:
-			candidates.append(root.path_join(name))
-			candidates.append(root.path_join("bin").path_join(name))
-	if not is_win:
-		candidates.append("/opt/blazium/bin/blazium-cli")
-		candidates.append("/usr/bin/blazium-cli")
-	for path in candidates:
-		if FileAccess.file_exists(path):
-			return path
-	return "blazium-cli.exe" if is_win else "blazium-cli"
+	return resolve_cli_in(install_dir(), OS.get_name())
+
+
+func resolve_cli_in(exe_dir: String, os_name: String) -> String:
+	# Only the launcher's own directory. PATH, BLAZIUM, and the parent folder are not trusted.
+	var names: PackedStringArray = ["blazium-cli.exe"] if os_name == "Windows" else ["blazium-cli"]
+	if exe_dir.is_empty():
+		return ""
+	for name in names:
+		var direct := exe_dir.path_join(name)
+		if FileAccess.file_exists(direct):
+			return direct
+		var nested := exe_dir.path_join("bin").path_join(name)
+		if FileAccess.file_exists(nested):
+			return nested
+	return ""
 
 
 func _run(args: PackedStringArray) -> Variant:

@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 import time
-import urllib.request
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from catalog_integrity import IntegrityError, finalize_bytes, read_url, read_version_file, validate_entry
 
 CLI_JSON = "https://cdn.blazium.app/cli/cli.json"
 MAX_ATTEMPTS = 6
@@ -41,12 +42,8 @@ def resolve_download(
 
 def _load_manifest() -> dict[str, Any]:
     # Cloudflare edge can serve stale cli.json for up to max-age; bust cache.
-    req = urllib.request.Request(
-        f"{CLI_JSON}?nocache={int(time.time())}",
-        headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)
+    raw = read_url(f"{CLI_JSON}?nocache={int(time.time())}", timeout=60)
+    return json.loads(raw)
 
 
 def main() -> int:
@@ -98,36 +95,33 @@ def main() -> int:
         return 1
 
     out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    url = download["download_url"]
-    print(f"Fetching CLI {version}: {url} -> {out}")
-    with urllib.request.urlopen(url, timeout=180) as resp:
-        data = resp.read()
+    floor = read_version_file(out.with_name(out.name + ".version"))
+    try:
+        sha = validate_entry(download, version, floor)
+    except IntegrityError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
-    expected = (download.get("sha256") or "").strip()
-    expected_size = int(download.get("size") or 0)
-    got = hashlib.sha256(data).hexdigest()
-    if expected:
-        if got.lower() == expected.lower():
-            print(f"sha256 ok: {got}")
-        else:
-            print(
-                f"sha256 mismatch (catalog={expected}, got={got}; "
-                f"size catalog={expected_size}, got={len(data)})",
-                file=sys.stderr,
-            )
-            return 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    url = str(download["download_url"])
+    print(f"Fetching CLI {version}: {url} -> {out}")
+    try:
+        data = read_url(url, timeout=180)
+        finalize_bytes(download, sha, data)
+    except IntegrityError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 — CI script; report and stop
+        print(f"download failed: {exc}", file=sys.stderr)
+        return 1
     if len(data) < 1_000_000:
         print(f"downloaded CLI too small ({len(data)} bytes)", file=sys.stderr)
-        return 1
-    # PE (MZ) or ELF magic
-    if not (data[:2] == b"MZ" or data[:4] == b"\x7fELF"):
-        print("downloaded CLI missing PE/ELF magic", file=sys.stderr)
         return 1
 
     out.write_bytes(data)
     out.chmod(out.stat().st_mode | 0o111)
-    print(f"Wrote {len(data)} bytes")
+    out.with_name(out.name + ".version").write_text(version.strip() + "\n", encoding="utf-8")
+    print(f"sha256 ok ({len(data)} bytes)")
     return 0
 
 

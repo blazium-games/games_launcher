@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -36,6 +36,18 @@ jobs:
             echo "secrets or binaries are tracked" >&2
             exit 1
           fi
+
+      - name: Launcher tests
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y unzip libfontconfig1 libx11-6 libxcursor1 libxinerama1 libxi6 libxrandr2 libxext6 libxrender1 libgl1
+          if ! sudo apt-get install -y libasound2; then
+            sudo apt-get install -y libasound2t64
+          fi
+          python3 -m pip install --user pytest || python3 -m pip install --break-system-packages pytest
+          python3 -m pytest -q tests/python
+          python3 ci/run_godot_tests.py
 
   export:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -161,6 +173,7 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: export
     runs-on: windows-2022
+    environment: production
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
@@ -196,8 +209,9 @@ jobs:
             exit 1
           fi
           echo "sign=true" >> "$GITHUB_OUTPUT"
-      - uses: bioblaze/sslcom-code-signer@v6
-        if: steps.sign.outputs.sign == 'true'
+      # v6. Pinned so a retagged release cannot receive the signing secrets.
+      - uses: bioblaze/sslcom-code-signer@57740ed8de661c667ea10e29fca4b1dab12ad560
+        if: github.event_name != 'pull_request' && steps.sign.outputs.sign == 'true'
         with:
           command: sign
           username: ${{ secrets.ES_USERNAME }}
@@ -267,6 +281,8 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: [package-windows, package-linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -333,20 +349,4 @@ jobs:
             gh release create "$tag" "${files[@]}" --repo "${GITHUB_REPOSITORY}" --title "Blazium Games launcher" --notes "Installer artifacts for ${GITHUB_SHA}."
           fi
       - name: Publish download files
-        env:
-          DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
-          DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
-          DO_SPACE_NAME: ${{ secrets.DO_SPACE_NAME }}
-          DO_SPACE_REGION: ${{ secrets.DO_SPACE_REGION }}
-        run: |
-          set -euo pipefail
-          missing=""
-          [ -z "${DO_ACCESS_KEY}" ] && missing="${missing} DO_ACCESS_KEY"
-          [ -z "${DO_SECRET_KEY}" ] && missing="${missing} DO_SECRET_KEY"
-          [ -z "${DO_SPACE_NAME}" ] && missing="${missing} DO_SPACE_NAME"
-          [ -z "${DO_SPACE_REGION}" ] && missing="${missing} DO_SPACE_REGION"
-          if [ -n "$missing" ]; then
-            echo "Publish skipped."
-            exit 0
-          fi
-          echo "Publish skipped. The release already has the files."
+        run: echo "Publish skipped. The release already has the files."

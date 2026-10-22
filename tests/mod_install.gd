@@ -8,8 +8,8 @@ func _run() -> void:
 	var installs: Node = root.get_node("Installs")
 	var parent_uid := "mod-install-parent"
 	var mod_uid := "mod-install-mod"
-	var parent := installs.game_dir(parent_uid)
-	var mod_dir := installs.game_dir(mod_uid)
+	var parent: String = installs.game_dir(parent_uid)
+	var mod_dir: String = installs.game_dir(mod_uid)
 	DirAccess.make_dir_recursive_absolute(parent)
 	var marker := FileAccess.open(parent.path_join("installed.path"), FileAccess.WRITE)
 	marker.store_string(parent.path_join("game.exe"))
@@ -23,7 +23,7 @@ func _run() -> void:
 		push_error("install path was rejected")
 		quit(1)
 		return
-	var zip_path := mod_dir.path_join("incoming.zip")
+	var zip_path: String = mod_dir.path_join("incoming.zip")
 	DirAccess.make_dir_recursive_absolute(mod_dir)
 	if not _write_zip(zip_path):
 		push_error("could not write the zip")
@@ -54,13 +54,18 @@ func _run() -> void:
 		quit(1)
 		return
 
-	var plain := installs.game_dir("mod-install-plain")
+	var plain: String = installs.game_dir("mod-install-plain")
 	DirAccess.make_dir_recursive_absolute(plain)
+	var body := "not-a-mod".to_utf8_buffer()
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	ctx.update(body)
 	var stored: Dictionary = installs._store({
 		"game_uid": "mod-install-plain",
 		"dest": plain.path_join("pack.zip"),
 		"overlay": false,
-	}, {"code": 200, "body": "not-a-mod".to_utf8_buffer()})
+		"checksum": ctx.finish().hex_encode(),
+	}, {"code": 200, "body": body})
 	if not bool(stored.get("ok", false)):
 		push_error("empty loader store failed")
 		quit(1)

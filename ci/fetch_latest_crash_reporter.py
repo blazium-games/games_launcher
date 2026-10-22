@@ -4,14 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
 import time
-import urllib.request
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from catalog_integrity import IntegrityError, finalize_bytes, read_url, read_version_file, validate_entry
 
 CRASH_REPORTER_JSON = "https://cdn.blazium.app/crash_reporter/crash_reporter.json"
 MAX_ATTEMPTS = 6
@@ -38,12 +39,8 @@ def resolve_download(
 
 
 def _load_manifest() -> dict[str, Any]:
-    req = urllib.request.Request(
-        f"{CRASH_REPORTER_JSON}?nocache={int(time.time())}",
-        headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)
+    raw = read_url(f"{CRASH_REPORTER_JSON}?nocache={int(time.time())}", timeout=60)
+    return json.loads(raw)
 
 
 def version_sidecar_path(out: Path) -> Path:
@@ -118,46 +115,42 @@ def main() -> int:
         )
         return 1
 
-    expected = (download.get("sha256") or "").strip().lower()
+    out = Path(args.out) if args.out else None
+    floor = read_version_file(version_sidecar_path(out)) if out is not None else ""
+    try:
+        sha = validate_entry(download, version, floor)
+    except IntegrityError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     if args.stamp_project:
-        if not expected:
-            print("catalog entry has no sha256; cannot stamp project", file=sys.stderr)
-            return 1
-        stamp_project_sha256(Path(args.stamp_project), expected)
-        if not args.out:
+        stamp_project_sha256(Path(args.stamp_project), sha)
+        if out is None:
             return 0
 
-    out = Path(args.out)
+    if out is None:
+        print("need --out to download", file=sys.stderr)
+        return 1
     out.parent.mkdir(parents=True, exist_ok=True)
-    url = download["download_url"]
+    url = str(download["download_url"])
     print(f"Fetching crash_reporter {version}: {url} -> {out}")
-    with urllib.request.urlopen(url, timeout=180) as resp:
-        data = resp.read()
-
-    expected = (download.get("sha256") or "").strip()
-    expected_size = int(download.get("size") or 0)
-    got = hashlib.sha256(data).hexdigest()
-    if expected:
-        if got.lower() == expected.lower():
-            print(f"sha256 ok: {got}")
-        else:
-            print(
-                f"sha256 mismatch (catalog={expected}, got={got}; "
-                f"size catalog={expected_size}, got={len(data)})",
-                file=sys.stderr,
-            )
-            return 1
+    try:
+        data = read_url(url, timeout=180)
+        finalize_bytes(download, sha, data)
+    except IntegrityError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 — CI script; report and stop
+        print(f"download failed: {exc}", file=sys.stderr)
+        return 1
     if len(data) < 1_000_000:
         print(f"downloaded crash_reporter too small ({len(data)} bytes)", file=sys.stderr)
-        return 1
-    if not (data[:2] == b"MZ" or data[:4] == b"\x7fELF"):
-        print("downloaded crash_reporter missing PE/ELF magic", file=sys.stderr)
         return 1
 
     out.write_bytes(data)
     out.chmod(out.stat().st_mode | 0o111)
     write_version_sidecar(out, version)
-    print(f"Wrote {len(data)} bytes")
+    print(f"sha256 ok ({len(data)} bytes)")
     return 0
 
 

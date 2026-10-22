@@ -8,6 +8,7 @@ var _poll_uid: String = ""
 var _polls: int = 0
 var _after_pay: Dictionary = {}
 var _install_uid: String = ""
+var _game_update_timer: Timer
 
 
 func _ready() -> void:
@@ -45,6 +46,7 @@ func _ready() -> void:
 	Installs.progress.connect(_on_install_progress)
 	Session.authenticated.connect(func () -> void:
 		_show("home", {})
+		_offer_game_updates()
 	)
 	if Shell.pending_page != "":
 		_show(Shell.pending_page, Shell.pending_extra)
@@ -57,6 +59,12 @@ func _ready() -> void:
 			_status.text = message
 		)
 		LauncherUpdates.check_and_prompt(false)
+	_game_update_timer = Timer.new()
+	_game_update_timer.wait_time = 1800.0
+	_game_update_timer.timeout.connect(_offer_game_updates)
+	add_child(_game_update_timer)
+	_game_update_timer.start()
+	call_deferred("_offer_game_updates")
 
 
 func _show(page: String, extra: Dictionary) -> void:
@@ -147,8 +155,19 @@ func _home() -> void:
 				_game_row(row)
 
 
+func _offer_game_updates() -> void:
+	if _status == null or not Session.is_authenticated():
+		return
+	var count := Installs.pending_update_count()
+	if count > 0:
+		_status.text = "%d game update(s) available" % count
+
+
 func _library() -> void:
-	_status.text = "Library"
+	var count := 0
+	if Session.is_authenticated():
+		count = Installs.pending_update_count()
+	_status.text = "Library" if count == 0 else ("%d game update(s) available" % count)
 	var body := Session.library()
 	if not Session.ok(body) and body.has("error"):
 		_status.text = _err(body)
@@ -273,6 +292,9 @@ func _install(uid: String, channel: String) -> void:
 		)
 		return
 	var file_uid := Installs.pick_file(uid, channel)
+	if file_uid.is_empty():
+		_status.text = "No download for this channel"
+		return
 	var result: Dictionary = await Installs.install_file_with_progress(uid, file_uid)
 	_status.text = str(result.get("status", result.get("error", "Install failed")))
 
@@ -295,6 +317,11 @@ func _play(uid: String) -> void:
 	_status.text = "Play"
 	if Session.owns(uid):
 		_body.add_child(_line("Status: %s" % Installs.status(uid)))
+		var offer := Installs.offer_for(uid)
+		if not offer.is_empty():
+			_action("Update", func () -> void:
+				Shell.install_game(uid, str(offer.get("channel", "stable")))
+			)
 		_action("Install", func () -> void:
 			Shell.install_game(uid, "")
 		)
@@ -551,6 +578,15 @@ func _owned_row(row: Dictionary) -> void:
 		Shell.show_play_card(uid)
 	)
 	line.add_child(play)
+	var offer := Installs.offer_for(uid)
+	if not offer.is_empty():
+		var update := Button.new()
+		update.text = "Update"
+		var update_channel := str(offer.get("channel", "stable"))
+		update.pressed.connect(func () -> void:
+			Shell.install_game(uid, update_channel)
+		)
+		line.add_child(update)
 	var remove := Button.new()
 	remove.text = "Uninstall"
 	remove.pressed.connect(func () -> void:

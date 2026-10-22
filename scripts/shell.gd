@@ -18,6 +18,7 @@ func _ready() -> void:
 	add_child(_chats)
 	_friends.hide()
 	_chats.hide()
+	LauncherRemote.register_user_scheme()
 
 
 func chat_window() -> Node:
@@ -58,6 +59,10 @@ func show_listing(uid: String, launch_if_owned: bool) -> void:
 
 func install_game(uid: String, channel: String) -> void:
 	_go("install", {"uid": uid, "channel": channel})
+
+
+func confirm_install(uid: String, channel: String) -> void:
+	_go("install_prompt", {"uid": uid, "channel": channel})
 
 
 func show_checkout(uid: String) -> void:

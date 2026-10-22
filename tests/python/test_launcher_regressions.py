@@ -186,6 +186,49 @@ def test_hub_script_rejects_an_off_host_url(tmp_path: Path):
     assert not (tmp_path / "setup.exe").exists()
 
 
+def test_postrm_keeps_the_install_on_upgrade():
+    text = _text("packaging/linux/postrm")
+    assert 'case "${1:-}"' in text
+    assert "remove|purge|0" in text
+    assert "xdg-mime" not in text
+    assert text.index("case") < text.index("rm -rf /opt/blazium/games")
+    postinst = _text("packaging/linux/postinst")
+    assert "xdg-mime" not in postinst
+    assert "BlaziumLauncher --ensure-launcher-remote" not in postinst
+
+
+def test_windows_installer_reports_hub_failure_and_broadcasts_path():
+    text = _text("packaging/windows/blazium-games.iss")
+    assert "ChangesEnvironment=yes" in text
+    assert "ExecAsOriginalUser" in text
+    assert "NotifyHubFailure" in text
+    assert "SuppressibleMsgBox" in text
+    assert "DownloadToFile" not in text
+    assert "{commonappdata}\\blazium\\launcher_remote.json" in text
+    remote = _text("scripts/launcher_remote.gd")
+    assert "ProgramData" not in remote
+    assert "/etc/blazium/launcher_remote.json" not in remote
+
+
+def test_windows_export_redacts_private_engine_paths(tmp_path: Path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "redact_private_paths", ROOT / "ci" / "redact_private_paths.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    path = b"D:\\a\\games_module\\games_module\\engine\\modules\\obfuscation\\register.cpp"
+    blob = path + b"\0" + "games_module".encode("utf-16le") + b"\0\0"
+    updated = module.redact(blob)
+    assert len(updated) == len(blob)
+    assert b"games_module" not in updated
+    assert b"obfuscation" not in updated
+    assert "games_module".encode("utf-16le") not in updated
+    assert b"register.cpp" in updated
+
+
 def test_hub_script_rejects_a_downgrade(tmp_path: Path):
     proc = _run_hub(
         tmp_path,

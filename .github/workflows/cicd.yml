@@ -162,6 +162,13 @@ jobs:
           mkdir -p export
           ".ci/editor/${{ matrix.editor }}" --headless --path . --export-release "${{ matrix.preset }}" "${{ matrix.out }}"
           test -f "${{ matrix.out }}"
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            if command -v python3 >/dev/null 2>&1; then
+              python3 ci/redact_private_paths.py "${{ matrix.out }}"
+            else
+              python ci/redact_private_paths.py "${{ matrix.out }}"
+            fi
+          fi
 
       - uses: actions/upload-artifact@v4
         if: steps.host.outputs.ready == 'true'

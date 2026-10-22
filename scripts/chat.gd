@@ -3,17 +3,49 @@ extends Window
 
 var _tabs: TabContainer
 var _pages: Dictionary = {}
+var _status: Label
+var _retry: Button
 
 
 func _ready() -> void:
 	close_requested.connect(hide)
+	var root := VBoxContainer.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(root)
+	_status = Label.new()
+	_status.text = ""
+	root.add_child(_status)
 	_tabs = TabContainer.new()
-	_tabs.set_anchors_preset(Control.PRESET_FULL_RECT)
-	add_child(_tabs)
+	_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(_tabs)
 	if not IrcClient.line.is_connected(_on_line):
 		IrcClient.line.connect(_on_line)
 	if not IrcClient.joined.is_connected(_on_joined):
 		IrcClient.joined.connect(_on_joined)
+	if not IrcClient.status.is_connected(_on_status):
+		IrcClient.status.connect(_on_status)
+
+
+func _on_status(text: String) -> void:
+	if _status != null:
+		_status.text = text
+	if text.begins_with("Chat login failed"):
+		if _retry != null and is_instance_valid(_retry):
+			return
+		_retry = Button.new()
+		_retry.text = "Retry chat"
+		_retry.pressed.connect(func () -> void:
+			IrcClient.allow_chat_retry()
+			if _retry != null and is_instance_valid(_retry):
+				_retry.queue_free()
+			_retry = null
+		)
+		if _status != null and _status.get_parent() != null:
+			_status.get_parent().add_child(_retry)
+		return
+	if _retry != null and is_instance_valid(_retry):
+		_retry.queue_free()
+		_retry = null
 
 
 func open_friend(username: String) -> void:
@@ -102,7 +134,16 @@ func _on_line(channel: String, nick: String, text: String, at: int) -> void:
 		if _pages.has(friend_key):
 			var invite_log: RichTextLabel = _pages[friend_key]["log"]
 			var invite_when := Time.get_datetime_string_from_unix_time(at, true)
-			invite_log.append_text("%s %s invited you to play %s\n" % [invite_when, nick, uid])
+			var title := Session.game_title(uid)
+			invite_log.append_text("%s %s\n" % [invite_when, IrcClient.play_invite_line(nick, title)])
+			var join := Button.new()
+			join.text = "Join %s" % IrcClient.play_invite_label(title)
+			join.pressed.connect(func () -> void:
+				Shell.show_play_card(uid)
+			)
+			var page: VBoxContainer = invite_log.get_parent()
+			if page != null:
+				page.add_child(join)
 		return
 	var key := ""
 	if channel.begins_with("#"):

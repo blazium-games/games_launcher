@@ -13,7 +13,9 @@ const PRODUCT_LABELS := {
 
 var _dismissed: Dictionary = {}
 var _queue: Array = []
+var _products: Array = []
 var _busy: bool = false
+var _quit_when_idle: bool = false
 var _dialog: ConfirmationDialog
 var _pending: Dictionary = {}
 var _last_summary: String = ""
@@ -111,7 +113,7 @@ func launcher_update_outstanding(products: Array) -> bool:
 
 
 func build_update_queue(products: Array, dismissed: Dictionary) -> Array:
-	var launcher_outstanding := launcher_update_outstanding(products)
+	var launcher_outstanding := launcher_update_outstanding(products) and not dismissed.has("launcher")
 	var queue: Array = []
 	for name in PRODUCT_ORDER:
 		if (name == "cli" or name == "crash_reporter") and launcher_outstanding:
@@ -149,9 +151,7 @@ func check_and_prompt(clear_session_dismissals: bool = false) -> void:
 		"--install-root", install_dir(),
 	]))
 	if data == null:
-		_last_summary = _last_error
-		if _last_summary.is_empty():
-			_last_summary = "Update check skipped"
+		_last_summary = friendly_update_error(_last_error if not _last_error.is_empty() else "Update check skipped")
 		status_changed.emit(_last_summary)
 		_busy = false
 		return
@@ -166,9 +166,10 @@ func check_and_prompt(clear_session_dismissals: bool = false) -> void:
 	_launcher_includes_crash_reporter = (
 		launcher_update_outstanding(products) and _find_product_status(products, "crash_reporter") != null
 	)
+	_products = products
 	_queue = build_update_queue(products, _dismissed)
 	if _queue.is_empty():
-		_last_summary = "All products up to date"
+		_last_summary = check_status_summary(products, _queue)
 		status_changed.emit(_last_summary)
 		_busy = false
 		return
@@ -237,6 +238,8 @@ func _on_declined() -> void:
 		_dismissed[product] = true
 		_last_summary = "Skipped %s until next relaunch" % str(PRODUCT_LABELS.get(product, product))
 		status_changed.emit(_last_summary)
+		if product == "launcher":
+			_queue = build_update_queue(_products, _dismissed)
 	_pending = {}
 	call_deferred("_show_next")
 
@@ -254,6 +257,15 @@ func _on_accepted() -> void:
 	var ok := false
 	match product:
 		"launcher":
+			var blocked := packaged_update_block(install_dir(), OS.get_name())
+			if blocked != "":
+				_last_summary = blocked
+				status_changed.emit(_last_summary)
+				_dismissed["launcher"] = true
+				_queue = build_update_queue(_products, _dismissed)
+				_pending = {}
+				call_deferred("_show_next")
+				return
 			# blazium-cli update apply --product launcher --current <version> --install-root <Games> --launch
 			var r: Variant = await _run(PackedStringArray([
 				"update", "apply", "--product", "launcher",
@@ -263,10 +275,19 @@ func _on_accepted() -> void:
 			]))
 			ok = r != null
 			if not ok:
-				_last_summary = _last_error
+				_last_summary = friendly_update_error(_last_error)
 				status_changed.emit(_last_summary)
+				_dismissed["launcher"] = true
+				_queue = build_update_queue(_products, _dismissed)
 				_pending = {}
 				call_deferred("_show_next")
+				return
+			var waiting := update_quit_block(Installs.any_running(), Installs.install_in_progress())
+			if waiting != "":
+				_quit_when_idle = true
+				_last_summary = waiting
+				status_changed.emit(_last_summary)
+				set_process(true)
 				return
 			_last_summary = "Launcher installer launched; quitting…"
 			status_changed.emit(_last_summary)
@@ -278,7 +299,7 @@ func _on_accepted() -> void:
 			if ok:
 				_last_summary = "blazium-cli updated to %s" % latest
 			else:
-				_last_summary = _last_error
+				_last_summary = friendly_update_error(_last_error)
 		"crash_reporter":
 			var r: Variant = await _run(PackedStringArray([
 				"update", "apply", "--product", "crash_reporter",
@@ -288,7 +309,7 @@ func _on_accepted() -> void:
 			if ok:
 				_last_summary = "Blazium Crash Reporter updated to %s" % latest
 			else:
-				_last_summary = _last_error
+				_last_summary = friendly_update_error(_last_error)
 		_:
 			_last_summary = "Unknown product %s" % product
 	status_changed.emit(_last_summary)
@@ -387,22 +408,28 @@ func _parse(text: String, code: int) -> Variant:
 
 
 func _extract_last_json(text: String) -> String:
-	var s := text.strip_edges()
-	var end := -1
-	for i in range(s.length() - 1, -1, -1):
-		var ch := s[i]
-		if ch == "}" or ch == "]":
-			end = i
-			break
-	if end < 0:
-		return ""
-	var open_ch := "{" if s[end] == "}" else "["
-	var close_ch := s[end]
+	var last := ""
+	var i := 0
+	while i < text.length():
+		var ch := text[i]
+		if ch == "{" or ch == "[":
+			var end := _json_end(text, i)
+			if end >= i:
+				last = text.substr(i, end - i + 1)
+				i = end + 1
+				continue
+		i += 1
+	return last
+
+
+func _json_end(text: String, start: int) -> int:
+	var open_ch := text[start]
+	var close_ch := "}" if open_ch == "{" else "]"
 	var depth := 0
 	var in_str := false
 	var escape := false
-	for i in range(end, -1, -1):
-		var ch := s[i]
+	for i in range(start, text.length()):
+		var ch := text[i]
 		if in_str:
 			if escape:
 				escape = false
@@ -414,10 +441,73 @@ func _extract_last_json(text: String) -> String:
 		if ch == "\"":
 			in_str = true
 			continue
-		if ch == close_ch:
+		if ch == open_ch:
 			depth += 1
-		elif ch == open_ch:
+		elif ch == close_ch:
 			depth -= 1
 			if depth == 0:
-				return s.substr(i, end - i + 1)
+				return i
+	return -1
+
+
+func product_check_notes(products: Array) -> PackedStringArray:
+	var notes := PackedStringArray()
+	for item in products:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var name := str(item.get("product", ""))
+		var label := str(PRODUCT_LABELS.get(name, name))
+		var err := str(item.get("error", "")).strip_edges()
+		if err != "":
+			notes.append("Couldn't check %s: %s" % [label, err])
+			continue
+		if bool(item.get("update_available", false)) and not _has_hash(item):
+			notes.append("Couldn't check %s: update skipped: catalog entry has no checksum" % label)
+	return notes
+
+
+func check_status_summary(products: Array, queue: Array) -> String:
+	if queue.size() > 0:
+		return "%d update(s) available" % queue.size()
+	var notes := product_check_notes(products)
+	if notes.size() > 0:
+		return "\n".join(notes)
+	return "All products up to date"
+
+
+func friendly_update_error(raw: String) -> String:
+	var text := raw.strip_edges()
+	if text.is_empty() or text == "Update check skipped" or text.find("not found") >= 0:
+		return "The update tool is not installed. Reinstall the launcher to check for updates."
+	if text.begins_with("empty CLI"):
+		return "The update tool returned nothing. Try again later."
+	if text.begins_with("failed to parse JSON"):
+		return "The update tool returned a response that could not be read. Try again later."
+	if text.begins_with("CLI exit"):
+		return "The update tool failed. Try again later."
+	return text
+
+
+func packaged_update_block(exe_dir: String, os_name: String) -> String:
+	if os_name == "Windows":
+		return ""
+	var clean := exe_dir.replace("\\", "/")
+	if clean == "/opt/blazium/games" or clean.begins_with("/opt/blazium/games/"):
+		return "Update with your package manager"
 	return ""
+
+
+func update_quit_block(running: bool, installing: bool) -> String:
+	if running or installing:
+		return "A game is running or an install is in progress. The update will apply when that finishes."
+	return ""
+
+
+func _process(_delta: float) -> void:
+	if not _quit_when_idle:
+		set_process(false)
+		return
+	if update_quit_block(Installs.any_running(), Installs.install_in_progress()) != "":
+		return
+	_quit_when_idle = false
+	get_tree().quit()

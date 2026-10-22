@@ -120,9 +120,9 @@ func send_invite(username: String, game_uid: String) -> void:
 
 
 func _send(text: String) -> void:
-	if _tls == null or text.contains("\u000d") or text.contains("\n") or text.contains("\u0000"):
+	if _tls == null or text.contains(String.chr(13)) or text.contains("\n") or text.contains(String.chr(0)):
 		return
-	_tls.put_data((text + "\u000d\n").to_utf8_buffer())
+	_tls.put_data((text + String.chr(13) + "\n").to_utf8_buffer())
 
 
 func _finish_login() -> void:
@@ -203,7 +203,7 @@ func game_part_line(game_uid: String) -> String:
 func privmsg_line(target: String, text: String) -> String:
 	if not target_ok(target):
 		return ""
-	var clean := text.replace("\u000d", "").replace("\n", " ").replace("\u0000", "").strip_edges()
+	var clean := text.replace(String.chr(13), "").replace("\n", " ").replace(String.chr(0), "").strip_edges()
 	if clean.is_empty():
 		return ""
 	return "PRIVMSG %s :%s" % [target, clean]
@@ -280,7 +280,7 @@ func _on_line(raw: String) -> void:
 	var params: Array = parsed.get("params", [])
 	if command == "PING":
 		var token := str(params[0]) if params.size() > 0 else ""
-		token = token.replace("\u000d", "").replace("\n", "")
+		token = token.replace(String.chr(13), "").replace("\n", "")
 		_send("PONG " + token)
 		_last_rx_ms = Time.get_ticks_msec()
 		return
@@ -288,7 +288,7 @@ func _on_line(raw: String) -> void:
 		var arg := str(params[0]) if params.size() > 0 else ""
 		if arg == "+" and not _sasl_sent:
 			_sasl_sent = true
-			var plain := "\u0000%s\u0000%s" % [nick, _token]
+			var plain := "%s%s%s%s" % [String.chr(0), nick, String.chr(0), _token]
 			_send("AUTHENTICATE %s" % Marshalls.utf8_to_base64(plain))
 		return
 	if server_numeric(parsed, "903"):

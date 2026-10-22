@@ -109,7 +109,7 @@ func is_running(game_uid: String) -> bool:
 	var pid := int(_procs.get(game_uid, 0))
 	if pid <= 0:
 		return false
-	if OS.is_process_running(pid):
+	if pid == OS.get_process_id() or OS.is_process_running(pid):
 		return true
 	_procs.erase(game_uid)
 	return false
@@ -657,7 +657,7 @@ func _extract_zip(zip_path: String, dest_dir: String, max_bytes: int = MAX_UNCOM
 
 func install_basename(filename: String) -> String:
 	var text := filename.replace("\\", "/").strip_edges()
-	if text.find("\u0000") >= 0:
+	if text.find(String.chr(0)) >= 0:
 		return ""
 	var base := text.get_file().strip_edges()
 	if base == "" or base == "." or base == ".." or base.contains("..") or base.contains(":") or base.contains("/") or base.contains("\\"):

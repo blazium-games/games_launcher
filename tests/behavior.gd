@@ -292,9 +292,9 @@ func _chat_and_wallet(session: Node) -> void:
 	var uid := "12345678-1234-1234-1234-123456789abc"
 	var other := "abcdefab-abcd-abcd-abcd-abcdefabcdef"
 	var irc: Node = root.get_node("IrcClient")
-	check(irc.privmsg_line("#a\u000d\nJOIN #b", "hi") == "", "crlf target is rejected")
+	check(irc.privmsg_line("#a" + String.chr(13) + "\nJOIN #b", "hi") == "", "crlf target is rejected")
 	check(not irc.target_ok("nick name"), "spaces are rejected in targets")
-	check(irc.game_join_line("uid\u000d\nQUIT") == "", "crlf game id is rejected")
+	check(irc.game_join_line("uid" + String.chr(13) + "\nQUIT") == "", "crlf game id is rejected")
 	check(irc.game_join_line(uid) == "GAMEJOIN " + uid, "valid game join")
 	var spoof: Dictionary = irc.parse_line(":nick!u@h PRIVMSG me :x JOIN #y 904 z")
 	check(str(spoof.get("command", "")) == "PRIVMSG", "join text is not the command")

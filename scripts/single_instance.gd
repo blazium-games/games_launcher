@@ -3,15 +3,18 @@ extends Node
 
 const PORT := 39219
 const HOST := "127.0.0.1"
+const TOKEN_PATH := "user://launcher_ipc.token"
 
 var _server: TCPServer
 var _peers: Array[StreamPeerTCP] = []
+var _token := ""
 
 
 func _ready() -> void:
 	if _ensure_only():
 		return
 	_server = TCPServer.new()
+	_token = _load_or_create_token()
 	var err := _server.listen(PORT, HOST)
 	if err != OK:
 		_forward_and_quit()
@@ -45,11 +48,45 @@ func _process(_delta: float) -> void:
 
 
 func _handle(msg: String) -> void:
-	if msg == "SHOW":
+	var command := accept_command(_token, msg)
+	if command == "SHOW":
 		Shell.focus_window()
 		return
-	if msg.begins_with("blazium://") and msg.length() < 2048:
-		UriRouter.open_uri(msg)
+	if command.begins_with("blazium://"):
+		UriRouter.open_uri(command)
+
+
+func accept_command(token: String, msg: String) -> String:
+	if token.is_empty() or msg.is_empty():
+		return ""
+	var parts := msg.split(" ", false, 1)
+	if parts.size() != 2 or parts[0] != token:
+		return ""
+	var command := parts[1].strip_edges()
+	if command == "SHOW":
+		return command
+	if command.begins_with("blazium://") and command.length() < 2048:
+		return command
+	return ""
+
+
+func _load_or_create_token() -> String:
+	if FileAccess.file_exists(TOKEN_PATH):
+		var existing := FileAccess.get_file_as_string(TOKEN_PATH).strip_edges()
+		if existing.length() >= 32:
+			return existing
+	var fresh := _random_token()
+	var file := FileAccess.open(TOKEN_PATH, FileAccess.WRITE)
+	if file == null:
+		return ""
+	file.store_string(fresh)
+	file.close()
+	return fresh
+
+
+func _random_token() -> String:
+	var crypto := Crypto.new()
+	return crypto.generate_random_bytes(32).hex_encode()
 
 
 func command_message(args: PackedStringArray) -> String:
@@ -69,6 +106,7 @@ func _forward_and_quit() -> void:
 		OS.delay_msec(20)
 		ticks += 1
 	var msg := command_message(OS.get_cmdline_user_args() + OS.get_cmdline_args())
-	if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
-		peer.put_data(msg.to_utf8_buffer())
+	var token := FileAccess.get_file_as_string(TOKEN_PATH).strip_edges()
+	if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED and not token.is_empty():
+		peer.put_data(("%s %s" % [token, msg]).to_utf8_buffer())
 	get_tree().quit(0)

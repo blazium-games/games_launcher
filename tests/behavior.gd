@@ -38,9 +38,9 @@ func check(cond: bool, message: String) -> void:
 
 func _launcher_updates(updates: Node) -> void:
 	var products: Array = [
-		{"product": "launcher", "update_available": true, "latest_version": "0.2.0", "current_version": "0.1.0"},
-		{"product": "cli", "update_available": true, "latest_version": "0.2.0", "current_version": "0.1.0"},
-		{"product": "crash_reporter", "update_available": true, "latest_version": "0.2.0", "current_version": "0.1.0"},
+		{"product": "launcher", "update_available": true, "latest_version": "0.2.0", "current_version": "0.1.0", "sha256": "ab".repeat(32)},
+		{"product": "cli", "update_available": true, "latest_version": "0.2.0", "current_version": "0.1.0", "sha256": "ab".repeat(32)},
+		{"product": "crash_reporter", "update_available": true, "latest_version": "0.2.0", "current_version": "0.1.0", "sha256": "ab".repeat(32)},
 	]
 	var queue: Array = updates.build_update_queue(products, {})
 	check(queue.size() == 1 and str(queue[0].get("product", "")) == "launcher", "launcher update skips bundled tools")
@@ -51,6 +51,10 @@ func _launcher_updates(updates: Node) -> void:
 		{"product": "cli", "update_available": true, "latest_version": "0.1.0", "current_version": "0.2.0"},
 	], "cli")
 	check(downgrade == null, "downgrade is not an update")
+	var unsigned = updates._find_product_status([
+		{"product": "cli", "update_available": true, "latest_version": "0.3.0", "current_version": "0.1.0"},
+	], "cli")
+	check(unsigned == null, "update without a hash is refused")
 	check(not updates.update_is_upgrade("1.0.0", "1.2.0"), "older is not an upgrade")
 	check(not updates.update_is_upgrade("1.2.0", "1.2.0"), "same version is not an upgrade")
 	check(updates.update_is_upgrade("1.2.0", "1.0.0"), "newer is an upgrade")
@@ -164,6 +168,13 @@ func _commands(single: Node) -> void:
 	var long := "blazium://" + "a".repeat(2048)
 	var huge: PackedStringArray = PackedStringArray([long])
 	check(single.command_message(huge) == "SHOW", "overlong uri ignored")
+	check(single.accept_command("secret", "secret SHOW") == "SHOW", "matching token shows")
+	check(single.accept_command("secret", "other SHOW") == "", "wrong token is ignored")
+	check(single.accept_command("secret", "SHOW") == "", "bare command is ignored")
+	check(External.allowed("https://blazium.games/login"), "service host opens")
+	check(External.allowed("blazium://library"), "blazium scheme opens")
+	check(not External.allowed("https://evil.example/login"), "other hosts stay closed")
+	check(not External.allowed("http://blazium.games/login"), "plain http stays closed")
 
 
 func _session(session: Node) -> void:

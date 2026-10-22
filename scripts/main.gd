@@ -168,13 +168,25 @@ func _library() -> void:
 	if Session.is_authenticated():
 		count = Installs.pending_update_count()
 	_status.text = "Library" if count == 0 else ("%d game update(s) available" % count)
+	Session.invalidate_library()
 	var body := Session.library()
 	if not Session.ok(body) and body.has("error"):
 		_status.text = _err(body)
 		return
+	var seen := {}
 	for row in _rows(body, ["library", "games"]):
 		if row is Dictionary:
+			seen[str(row.get("game_uid", ""))] = true
 			_owned_row(row)
+	if Session.library_is_live():
+		var any := false
+		for uid in Installs.installed_game_uids():
+			if bool(seen.get(uid, false)):
+				continue
+			if not any:
+				_heading("Installed, not owned")
+				any = true
+			_revoked_row(uid)
 
 
 func _wallet() -> void:
@@ -239,7 +251,8 @@ func _search(query: String) -> void:
 
 
 func _listing(uid: String, launch_if_owned: bool) -> void:
-	var body := Session.overview(uid)
+	var snap := Session.listing(uid)
+	var body: Dictionary = snap.get("overview", {})
 	Session.remember_owner(uid, str(_field(body, ["username", "developer"])))
 	var name := str(_field(body, ["name"]))
 	if name.is_empty():
@@ -250,8 +263,8 @@ func _listing(uid: String, launch_if_owned: bool) -> void:
 		_body.add_child(_line(summary))
 	_body.add_child(_line("Price %s" % _money(_int_field(body, ["price_cents"]))))
 	_editions(body)
-	_changelog(uid, body)
-	if Session.owns(uid):
+	_changelog(uid, body, snap.get("changelog", {}))
+	if bool(snap.get("owned", false)):
 		_status.text = "%s — in your library" % name
 		if launch_if_owned and Installs.is_installed(uid):
 			Installs.launch(uid)
@@ -265,7 +278,7 @@ func _listing(uid: String, launch_if_owned: bool) -> void:
 		_action("Buy", func () -> void:
 			Shell.show_checkout(uid)
 		)
-	if Session.may_write(uid):
+	if bool(snap.get("may_write", false)):
 		_action("Review", func () -> void:
 			Shell.show_review(uid)
 		)
@@ -408,19 +421,28 @@ func _tick_top_up() -> void:
 	if state == "paid" and not _after_pay.is_empty() and not bool(_after_pay.get("bought", false)):
 		var game := str(_after_pay.get("game", ""))
 		if str(_after_pay.get("idem", "")).is_empty():
-			_after_pay["idem"] = str(Time.get_unix_time_from_system())
+			_after_pay["idem"] = Session.purchase_key(game, str(_after_pay.get("kind", "purchase")), int(_after_pay.get("total", 0)))
 		var result := Session.purchase(game, str(_after_pay.get("kind", "purchase")), int(_after_pay.get("amount", 0)), int(_after_pay.get("total", 0)), str(_after_pay.get("idem", "")))
 		if Session.ok(result):
 			_after_pay["bought"] = true
 		else:
 			_status.text = _err(result)
+			_poll.stop()
+			_poll_uid = ""
+			return
 	var game_uid := str(_after_pay.get("game", ""))
 	var bought := bool(_after_pay.get("bought", false))
 	var settled := state == "paid" and (_after_pay.is_empty() or Session.owns(game_uid) or (str(_after_pay.get("kind", "")) == "donation" and bought))
-	if settled or _polls > 40:
+	if not settled and _polls > 40:
+		_poll.stop()
+		_poll_uid = ""
+		_status.text = "Payment did not finish"
+		return
+	if settled:
 		_poll.stop()
 		_poll_uid = ""
 		if game_uid != "":
+			Session.invalidate_library()
 			Session.library()
 		if game_uid != "" and Session.owns(game_uid):
 			_after_pay = {}
@@ -431,11 +453,12 @@ func _tick_top_up() -> void:
 
 func _pay_panel(uid: String) -> void:
 	var body := Session.overview(uid)
+	if not Session.can_show_purchase(body):
+		_body.add_child(_line("Could not load this game."))
+		return
 	var price := _int_field(body, ["price_cents"])
 	var donations := _bool_field(body, ["donations_enabled"])
 	if price > 0:
-		_quote_actions(uid, "purchase", 0, "Buy this game?", "This spends wallet balance.")
-	elif body.is_empty():
 		_quote_actions(uid, "purchase", 0, "Buy this game?", "This spends wallet balance.")
 	elif not donations:
 		_body.add_child(_line("This game is free."))
@@ -458,12 +481,18 @@ func _quote_actions(uid: String, kind: String, amount: int, title: String, detai
 		return
 	var price := int(quoted.get("price_cents", amount))
 	var total := int(quoted.get("total_cents", price))
+	var key := Session.purchase_key(uid, kind, total)
+	var scope := Session.purchase_scope(uid, kind, total)
 	_body.add_child(_line("Total %s" % _money(total)))
 	_action("Pay with balance", func () -> void:
-		Confirm.ask(kind, title, detail, func () -> void:
-			var result := Session.purchase(uid, kind, price, total, str(Time.get_unix_time_from_system()))
+		Confirm.ask(kind, title, Session.purchase_confirm_text(total, detail), func () -> void:
+			if not Session.begin_purchase(scope):
+				_status.text = "Payment already in progress"
+				return
+			var result := Session.purchase(uid, kind, price, total, key)
+			Session.end_purchase(scope)
 			if Session.ok(result):
-				Session.library()
+				Session.invalidate_library()
 				if kind == "purchase" and Session.owns(uid):
 					Shell.show_page("library")
 				else:
@@ -473,16 +502,21 @@ func _quote_actions(uid: String, kind: String, amount: int, title: String, detai
 		)
 	)
 	_action("Pay by card", func () -> void:
-		Confirm.ask("top_up", title, "This opens the live Checkout page.", func () -> void:
-			var cents := maxi(total, 500)
-			if cents > 50000:
-				cents = 50000
+		var balance := int(Session.wallet().get("balance_cents", 0))
+		var cents := Session.card_top_up_cents(total, balance)
+		if cents < 0:
+			_status.text = "Card top-up cannot cover this total without leaving balance above the cap"
+			return
+		if cents == 0:
+			_status.text = "Wallet balance already covers this total"
+			return
+		Confirm.ask("top_up", title, Session.purchase_confirm_text(total, "This opens the live Checkout page."), func () -> void:
 			var created := Session.create_top_up(cents)
 			var url := str(created.get("checkout_url", ""))
 			if url.is_empty():
 				_status.text = _err(created)
 				return
-			_after_pay = {"game": uid, "kind": kind, "amount": price, "total": total, "bought": false}
+			_after_pay = {"game": uid, "kind": kind, "amount": price, "total": total, "bought": false, "idem": key}
 			External.open(url)
 			_watch_top_up(str(created.get("top_up_uid", "")))
 		)
@@ -499,8 +533,9 @@ func _editions(body: Dictionary) -> void:
 			_body.add_child(_line("%s — %s" % [str(sku.get("name", "")), _money(int(sku.get("price_cents", 0)))]))
 
 
-func _changelog(uid: String, body: Dictionary) -> void:
-	var log := Session.changelog(uid)
+func _changelog(uid: String, body: Dictionary, log: Dictionary = {}) -> void:
+	if log.is_empty():
+		log = Session.changelog(uid)
 	var rows = log.get("changelogs", [])
 	if not (rows is Array) or (rows as Array).is_empty():
 		var latest = _field(body, ["latest_changelog", "changelog"])
@@ -548,9 +583,7 @@ func _find_field(node: Variant, keys: Array) -> Variant:
 
 
 func _money(cents: int) -> String:
-	var sign := "-" if cents < 0 else ""
-	var abs_cents := absi(cents)
-	return "%s$%d.%02d" % [sign, abs_cents / 100, abs_cents % 100]
+	return Session.format_cents(cents)
 
 
 func _bytes(n: int) -> String:
@@ -587,6 +620,19 @@ func _owned_row(row: Dictionary) -> void:
 			Shell.install_game(uid, update_channel)
 		)
 		line.add_child(update)
+	var remove := Button.new()
+	remove.text = "Uninstall"
+	remove.pressed.connect(func () -> void:
+		Installs.uninstall(uid)
+		Shell.show_page("library")
+	)
+	line.add_child(remove)
+	_body.add_child(line)
+
+
+func _revoked_row(uid: String) -> void:
+	var line := HBoxContainer.new()
+	line.add_child(_line("%s — installed, license revoked" % uid))
 	var remove := Button.new()
 	remove.text = "Uninstall"
 	remove.pressed.connect(func () -> void:

@@ -3,7 +3,6 @@ extends Window
 
 var _tabs: TabContainer
 var _pages: Dictionary = {}
-var _wait_uid: String = ""
 
 
 func _ready() -> void:
@@ -27,23 +26,19 @@ func open_friend(username: String) -> void:
 func open_game(game_uid: String) -> void:
 	if game_uid.is_empty():
 		return
-	_wait_uid = game_uid
 	_ensure("game:" + game_uid, game_uid, true)
 	IrcClient.join_game(game_uid)
 
 
 func _on_joined(channel: String) -> void:
-	if _wait_uid.is_empty():
-		return
-	var key := "game:" + _wait_uid
-	if _pages.has(key):
-		_pages[key]["channel"] = channel
-	_wait_uid = ""
+	IrcClient.bind_joined_channel(_pages, channel)
 
 
 func _ensure(key: String, title: String, game: bool) -> void:
 	if _pages.has(key):
 		_tabs.current_tab = _pages[key]["index"]
+		return
+	if not IrcClient.can_open_tab(_pages.size()):
 		return
 	var page := VBoxContainer.new()
 	page.name = title
@@ -96,9 +91,18 @@ func _ensure(key: String, title: String, game: bool) -> void:
 	_tabs.current_tab = index
 
 
-func _on_line(channel: String, nick: String, text: String, _at: int) -> void:
+func _on_line(channel: String, nick: String, text: String, at: int) -> void:
 	if text.begins_with("PLAY:"):
-		Shell.show_play_card(text.substr(5).strip_edges())
+		var uid: String = IrcClient.play_invite_uid(channel, text, Session.is_friend(nick))
+		if uid == "":
+			return
+		var friend_key := "friend:" + nick.strip_edges().to_lower()
+		if not _pages.has(friend_key):
+			open_friend(nick)
+		if _pages.has(friend_key):
+			var invite_log: RichTextLabel = _pages[friend_key]["log"]
+			var invite_when := Time.get_datetime_string_from_unix_time(at, true)
+			invite_log.append_text("%s %s invited you to play %s\n" % [invite_when, nick, uid])
 		return
 	var key := ""
 	if channel.begins_with("#"):
@@ -114,5 +118,5 @@ func _on_line(channel: String, nick: String, text: String, _at: int) -> void:
 			open_friend(who)
 	if _pages.has(key):
 		var log: RichTextLabel = _pages[key]["log"]
-		var when := Time.get_datetime_string_from_unix_time(_at, true)
+		var when := Time.get_datetime_string_from_unix_time(at, true)
 		log.append_text("%s %s: %s\n" % [when, nick, text])

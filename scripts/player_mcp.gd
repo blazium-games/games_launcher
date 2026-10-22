@@ -72,8 +72,11 @@ func _run(args: Dictionary, name: String) -> Dictionary:
 			return Session.quote(str(args.get("game_uid", "")), str(args.get("kind", "purchase")), int(args.get("amount_cents", 0)))
 		"purchase":
 			return Confirm.ask("purchase", "Buy this game?", "This spends wallet balance.", func ():
-				var quoted := Session.quote(str(args.get("game_uid", "")), str(args.get("kind", "purchase")), int(args.get("amount_cents", 0)))
-				Session.purchase(str(args.get("game_uid", "")), str(args.get("kind", "purchase")), int(args.get("amount_cents", 0)), int(quoted.get("total_cents", args.get("amount_cents", 0))), str(Time.get_unix_time_from_system()))
+				var game_uid := str(args.get("game_uid", ""))
+				var kind := str(args.get("kind", "purchase"))
+				var quoted := Session.quote(game_uid, kind, int(args.get("amount_cents", 0)))
+				var total := int(quoted.get("total_cents", args.get("amount_cents", 0)))
+				Session.purchase(game_uid, kind, int(args.get("amount_cents", 0)), total, Session.purchase_key(game_uid, kind, total))
 			)
 		"top_up_link":
 			return Confirm.ask("top_up", "Add funds?", "This opens the live Checkout page.", func ():

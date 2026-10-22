@@ -18,11 +18,10 @@ func _ready() -> void:
 	add_child(_chats)
 	_friends.hide()
 	_chats.hide()
-	if IrcClient.has_signal("invite"):
-		IrcClient.invite.connect(func (from_nick: String, game_uid: String) -> void:
-			show_play_card(game_uid)
-			show_notice("%s invited you to play" % from_nick)
-		)
+
+
+func chat_window() -> Node:
+	return _chats
 
 
 func show_notice(text: String) -> void:

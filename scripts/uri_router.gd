@@ -133,6 +133,10 @@ func _route(parsed: Dictionary) -> void:
 			Shell.open_chat_game(str(parsed.get("uid", "")))
 
 
+func valid_uid(value: String) -> bool:
+	return _uid(value)
+
+
 func _uid(value: String) -> bool:
 	var re := RegEx.new()
 	re.compile(UID)

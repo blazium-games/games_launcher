@@ -33,6 +33,32 @@ def test_cli_resolution_stays_inside_the_install_dir():
     assert "resolve_cli_in" in text
 
 
+def test_download_rejects_escape_and_stalls():
+    text = _text("scripts/installs.gd")
+    assert "download_stalled" in text
+    assert 'begins_with("https://")' in text
+    assert ".part" in text
+    assert "install_basename" in text
+
+
+def test_irc_commands_are_tokens_and_reconnect():
+    text = _text("scripts/irc_client.gd")
+    assert "parse_line" in text
+    assert "note_disconnect" in text
+    assert "target_ok" in text
+    assert '" 903 "' not in text
+    assert '" JOIN "' not in text
+
+
+def test_listing_does_not_scan_shelves_for_the_owner():
+    text = _text("scripts/session.gd")
+    owner = text.split("func owner_name", 1)[1].split("\nfunc ", 1)[0]
+    assert "get_shelf" not in owner
+    assert "shelf(" not in owner
+    assert "purchase_key" in text
+    assert "card_top_up_cents" in text
+
+
 def test_install_record_and_stable_default_are_present():
     text = _text("scripts/installs.gd")
     assert "installed.json" in text

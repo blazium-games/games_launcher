@@ -10,6 +10,7 @@ const IDLE_MS := 90000
 const MAX_TABS := 20
 
 var connected: bool = false
+var login_refused: bool = false
 var nick: String = ""
 var _tls: StreamPeerTLS
 var _raw: PackedByteArray = PackedByteArray()
@@ -23,8 +24,14 @@ var _retry_msec: int = 0
 var _last_rx_ms: int = 0
 
 
+func _ready() -> void:
+	Session.authenticated.connect(func () -> void:
+		login_refused = false
+	)
+
+
 func connect_session() -> void:
-	if connected or _tls != null:
+	if login_refused or connected or _tls != null:
 		return
 	var session := Session.irc_session()
 	nick = str(session.get("username", ""))
@@ -103,14 +110,17 @@ func part_game(game_uid: String) -> void:
 	_send(command)
 
 
-func send_privmsg(target: String, text: String) -> void:
+func send_privmsg(target: String, text: String) -> bool:
 	var command := privmsg_line(target, text)
 	if command.is_empty():
-		return
-	connect_session()
+		return false
+	if not connected or _tls == null:
+		status.emit("Not connected; message was not sent")
+		return false
 	_send(command)
 	var clean := command.substr(command.find(" :") + 2)
 	line.emit(target, nick, clean, int(Time.get_unix_time_from_system()))
+	return true
 
 
 func send_invite(username: String, game_uid: String) -> void:
@@ -142,6 +152,14 @@ func _finish_login() -> void:
 
 
 func note_disconnect() -> void:
+	if login_refused:
+		connected = false
+		_cap_sent = false
+		_sasl_sent = false
+		_raw = PackedByteArray()
+		_tls = null
+		_retry_msec = 0
+		return
 	connected = false
 	_cap_sent = false
 	_sasl_sent = false
@@ -295,7 +313,10 @@ func _on_line(raw: String) -> void:
 		_finish_login()
 		return
 	if server_numeric(parsed, "904") or server_numeric(parsed, "906"):
-		status.emit("Chat login failed")
+		var reason := ""
+		if params.size() > 0:
+			reason = str(params[params.size() - 1])
+		refuse_login(reason)
 		return
 	var channel := join_channel_from(raw)
 	if channel != "":
@@ -363,3 +384,38 @@ func bind_joined_channel(pages: Dictionary, channel: String) -> String:
 
 func can_open_tab(open_count: int) -> bool:
 	return open_count < MAX_TABS
+
+
+func refuse_login(reason: String) -> void:
+	login_refused = true
+	connected = false
+	_cap_sent = false
+	_sasl_sent = false
+	_retry_msec = 0
+	_attempt = 0
+	if _tls != null:
+		_tls.disconnect_from_host()
+		_tls = null
+	var text := "Chat login failed"
+	var detail := reason.strip_edges()
+	if detail != "" and detail != nick:
+		text += ": " + detail
+	status.emit(text)
+
+
+func allow_chat_retry() -> void:
+	login_refused = false
+	_attempt = 0
+	_retry_msec = 0
+	connect_session()
+
+
+func play_invite_label(title: String) -> String:
+	var name := title.strip_edges()
+	if name == "":
+		return "a game"
+	return name
+
+
+func play_invite_line(who: String, title: String) -> String:
+	return "%s invited you to play %s" % [who, play_invite_label(title)]

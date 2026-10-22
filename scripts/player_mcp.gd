@@ -60,10 +60,15 @@ func _run(args: Dictionary, name: String) -> Dictionary:
 		"library":
 			return Session.library()
 		"install":
-			return Installs.install_file(str(args.get("game_uid", "")), Installs.pick_file(str(args.get("game_uid", "")), str(args.get("channel", ""))))
+			return await Installs.install_file_with_progress(str(args.get("game_uid", "")), Installs.pick_file(str(args.get("game_uid", "")), str(args.get("channel", ""))))
 		"uninstall":
-			Installs.uninstall(str(args.get("game_uid", "")))
-			return {"ok": true, "status": Installs.status(str(args.get("game_uid", "")))}
+			var game_uid := str(args.get("game_uid", ""))
+			if Installs.install_in_progress(game_uid):
+				return {"ok": false, "error": "Wait for the install to finish"}
+			if not bool(args.get("confirm", false)):
+				var title := Session.display_name(Session.game_title(game_uid), game_uid)
+				return {"ok": false, "needs_confirm": true, "error": Installs.uninstall_prompt(title, Installs.is_running(game_uid))}
+			return Installs.uninstall(game_uid, true)
 		"launch":
 			return Installs.launch(str(args.get("game_uid", "")))
 		"game_status":
@@ -71,16 +76,26 @@ func _run(args: Dictionary, name: String) -> Dictionary:
 		"quote":
 			return Session.quote(str(args.get("game_uid", "")), str(args.get("kind", "purchase")), int(args.get("amount_cents", 0)))
 		"purchase":
-			return Confirm.ask("purchase", "Buy this game?", "This spends wallet balance.", func ():
-				var game_uid := str(args.get("game_uid", ""))
-				var kind := str(args.get("kind", "purchase"))
-				var quoted := Session.quote(game_uid, kind, int(args.get("amount_cents", 0)))
-				var total := int(quoted.get("total_cents", args.get("amount_cents", 0)))
-				Session.purchase(game_uid, kind, int(args.get("amount_cents", 0)), total, Session.purchase_key(game_uid, kind, total))
+			var game_uid := str(args.get("game_uid", ""))
+			var kind := str(args.get("kind", "purchase"))
+			var quoted := Session.quote(game_uid, kind, int(args.get("amount_cents", 0)))
+			if not Session.ok(quoted):
+				return {"ok": false, "error": Session.error_text(quoted)}
+			var total := int(quoted.get("total_cents", args.get("amount_cents", 0)))
+			var title := Session.display_name(Session.game_title(game_uid), game_uid)
+			var price := int(quoted.get("price_cents", args.get("amount_cents", 0)))
+			return Confirm.ask("purchase", "Buy %s?" % title, Session.purchase_confirm_text(total, title), func ():
+				var result := Session.purchase(game_uid, kind, price, total, Session.purchase_key(game_uid, kind, total))
+				if Session.ok(result):
+					Session.clear_purchase_key(game_uid, kind, total)
 			)
 		"top_up_link":
-			return Confirm.ask("top_up", "Add funds?", "This opens the live Checkout page.", func ():
-				var created := Session.create_top_up(int(args.get("amount_cents", 0)))
+			Session.load_payment_options()
+			var cents := int(args.get("amount_cents", 0))
+			if cents < Session.top_up_min_cents() or cents > Session.top_up_max_cents():
+				return {"ok": false, "error": Session.top_up_refusal()}
+			return Confirm.ask("top_up", "Add funds?", Session.card_checkout_text(cents), func ():
+				var created := Session.create_top_up(cents)
 				var url := str(created.get("checkout_url", ""))
 				if not url.is_empty():
 					External.open(url)

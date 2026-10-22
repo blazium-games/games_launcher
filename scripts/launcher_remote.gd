@@ -22,10 +22,7 @@ func _ready() -> void:
 
 func _bootstrap() -> void:
 	if config_path.is_empty():
-		var user := _user_path()
-		config_path = user if _valid(user) or not _valid(_machine_path()) else _machine_path()
-		if not _valid(config_path):
-			config_path = user
+		config_path = _user_path()
 	_ensure_file()
 	_apply_settings()
 	if ensure_only:
@@ -47,13 +44,21 @@ func _user_path() -> String:
 	return home.path_join(".config").path_join("blazium").path_join("launcher_remote.json")
 
 
-func _machine_path() -> String:
-	if OS.get_name() == "Windows":
-		var base := OS.get_environment("PROGRAMDATA")
-		if base.is_empty():
-			base = "C:/ProgramData"
-		return base.path_join("blazium").path_join("launcher_remote.json")
-	return "/etc/blazium/launcher_remote.json"
+func should_register_user_scheme(os_name: String, uid: int) -> bool:
+	if os_name == "Windows":
+		return false
+	return uid > 0
+
+
+func register_user_scheme() -> void:
+	var uid := 1
+	if OS.get_name() != "Windows":
+		var output: Array = []
+		if OS.execute("id", PackedStringArray(["-u"]), output, true) == 0 and output.size() > 0:
+			uid = int(str(output[0]).strip_edges())
+	if not should_register_user_scheme(OS.get_name(), uid):
+		return
+	OS.execute("xdg-mime", PackedStringArray(["default", "blazium-games-uri.desktop", "x-scheme-handler/blazium"]), [], true)
 
 
 func _valid(path: String) -> bool:

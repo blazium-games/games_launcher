@@ -37,6 +37,7 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ChangesAssociations=yes
+ChangesEnvironment=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 CloseApplications=yes
 
@@ -179,19 +180,10 @@ begin
   Result := SaveStringToFile(Path, Contents, False);
 end;
 
-function DownloadToFile(const URL, Dest: String): Boolean;
-var
-  ResultCode: Integer;
-  ScriptPath: String;
+procedure NotifyHubFailure(const Detail: String);
 begin
-  Result := False;
-  ForceDirectories(ExpandConstant('{tmp}'));
-  ScriptPath := ExpandConstant('{tmp}\blazium-download.ps1');
-  if not SaveText(ScriptPath,
-    '$ProgressPreference = ''SilentlyContinue''; Invoke-WebRequest -UseBasicParsing -Uri ''' + URL + ''' -OutFile ''' + Dest + '''') then
-    exit;
-  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Result := (ResultCode = 0) and FileExists(Dest);
+  Log(Detail);
+  SuppressibleMsgBox('BlaziumHub could not be installed. ' + Detail, mbError, MB_OK, IDOK);
 end;
 
 function HubSetupFromManifest: String;
@@ -227,7 +219,7 @@ begin
     Setup := HubSetupFromManifest;
   if (Setup = '') or not FileExists(Setup) then
   begin
-    Log('BlaziumHub setup was not found');
+    NotifyHubFailure('BlaziumHub setup was not found');
     exit;
   end;
   Args := '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="' + SharedRoot + '"';
@@ -244,6 +236,8 @@ begin
     end;
   end;
   Log('BlaziumHub setup exit=' + IntToStr(ResultCode));
+  if ResultCode <> 0 then
+    NotifyHubFailure('BlaziumHub setup exit=' + IntToStr(ResultCode));
 end;
 
 function InitializeSetup: Boolean;
@@ -287,7 +281,7 @@ begin
     RegWriteStringValue(HKCR, 'blazium', 'URL Protocol', '');
     RegWriteStringValue(HKCR, 'blazium\shell\open\command', '', '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" "%1"');
   end;
-  Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--ensure-launcher-remote', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  ExecAsOriginalUser(ExpandConstant('{app}\{#MyAppExeName}'), '--ensure-launcher-remote', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -327,5 +321,6 @@ begin
     RegDeleteKeyIncludingSubkeys(HKLM, 'SOFTWARE\Blazium Games');
   end;
   DeleteFile(ExpandConstant('{userappdata}\blazium\launcher_remote.json'));
+  DeleteFile(ExpandConstant('{commonappdata}\blazium\launcher_remote.json'));
   DeleteFile(AddBackslash(SharedRoot) + 'games.cmd');
 end;

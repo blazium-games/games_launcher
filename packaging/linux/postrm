@@ -1,5 +1,10 @@
 #!/bin/sh
 set -eu
+# dpkg passes remove or purge. rpm passes 0. upgrade must leave the new files in place.
+case "${1:-}" in
+  remove|purge|0) ;;
+  *) exit 0 ;;
+esac
 if [ -f /opt/blazium/games/.protocol-owner ]; then
   rm -f /usr/share/applications/blazium-games-uri.desktop
   update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
@@ -14,14 +19,8 @@ if [ -x /opt/blazium/engine/blazium-hub ]; then
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
   fi
-  if command -v xdg-mime >/dev/null 2>&1; then
-    xdg-mime default blazium-uri.desktop x-scheme-handler/blazium >/dev/null 2>&1 || true
-  fi
 elif [ ! -x /opt/blazium/bin/blazium-cli ] && [ ! -x /opt/blazium/bin/chauffeur ]; then
   rm -f /etc/profile.d/blazium.sh
 fi
 rmdir /opt/blazium/bin 2>/dev/null || true
 rmdir /opt/blazium 2>/dev/null || true
-if [ -n "${HOME:-}" ]; then
-  rm -f "$HOME/.config/blazium/launcher_remote.json"
-fi

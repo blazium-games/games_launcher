@@ -3,6 +3,8 @@ extends Window
 
 var _box: VBoxContainer
 var _status: Label
+var _invite_picker: OptionButton
+var _invite_send: Button
 
 
 func _ready() -> void:
@@ -49,8 +51,9 @@ func refresh() -> void:
 	if not Session.is_authenticated():
 		_status.text = "Sign in to see friends"
 		return
+	_clear_invite_picker()
 	var friends := Session.friends()
-	var playing := Session.friends_playing()
+	var playing := {"playing": Session.playing_from(friends)}
 	_status.text = "" if Session.ok(friends) else _err(friends)
 	_section("Requests")
 	for row in _rows(friends, ["requests", "incoming"]):
@@ -81,14 +84,18 @@ func _request(row: Dictionary) -> void:
 	var yes := Button.new()
 	yes.text = "Accept"
 	yes.pressed.connect(func () -> void:
-		Session.respond_friend_request(uid, true)
-		refresh()
+		var result := Session.respond_friend_request(uid, true)
+		_status.text = Session.friend_action_status(result, true)
+		if Session.ok(result):
+			refresh()
 	)
 	var no := Button.new()
 	no.text = "Decline"
 	no.pressed.connect(func () -> void:
-		Session.respond_friend_request(uid, false)
-		refresh()
+		var result := Session.respond_friend_request(uid, false)
+		_status.text = Session.friend_action_status(result, false)
+		if Session.ok(result):
+			refresh()
 	)
 	line.add_child(yes)
 	line.add_child(no)
@@ -132,10 +139,14 @@ func _invite(username: String) -> void:
 	if games.is_empty():
 		_status.text = "You have no games to invite them to"
 		return
+	_clear_invite_picker()
 	var pick := OptionButton.new()
 	for row in games:
 		if row is Dictionary:
-			pick.add_item(str(row.get("name", row.get("game_uid", ""))))
+			var title := str(row.get("name", "")).strip_edges()
+			if title == "":
+				title = Session.display_name("", str(row.get("game_uid", "")))
+			pick.add_item(title)
 			pick.set_item_metadata(pick.item_count - 1, str(row.get("game_uid", "")))
 	var send := Button.new()
 	send.text = "Send invite"
@@ -143,13 +154,39 @@ func _invite(username: String) -> void:
 		var uid := str(pick.get_item_metadata(pick.selected))
 		if uid.is_empty():
 			return
-		Confirm.ask("invite", "Invite this friend?", username, func () -> void:
+		var title := Session.game_title(uid)
+		Confirm.ask("invite", "Invite this friend?", Session.display_name(title, uid), func () -> void:
 			IrcClient.send_invite(username, uid)
 			_status.text = "Invite sent"
 		)
 	)
+	_invite_picker = pick
+	_invite_send = send
 	_box.add_child(pick)
 	_box.add_child(send)
+
+
+func picker_count() -> int:
+	var count := 0
+	if _box == null:
+		return 0
+	for child in _box.get_children():
+		if child is OptionButton:
+			count += 1
+	return count
+
+
+func _clear_invite_picker() -> void:
+	if _invite_picker != null and is_instance_valid(_invite_picker):
+		if _invite_picker.get_parent() == _box:
+			_box.remove_child(_invite_picker)
+		_invite_picker.free()
+	if _invite_send != null and is_instance_valid(_invite_send):
+		if _invite_send.get_parent() == _box:
+			_box.remove_child(_invite_send)
+		_invite_send.free()
+	_invite_picker = null
+	_invite_send = null
 
 
 func _section(title: String) -> void:

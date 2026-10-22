@@ -43,6 +43,10 @@ func _ready() -> void:
 	add_child(_poll)
 	Shell.navigate.connect(_show)
 	Session.login_url_ready.connect(_on_login_url)
+	Session.login_state_changed.connect(_on_login_state)
+	IrcClient.status.connect(func (text: String) -> void:
+		_status.text = text
+	)
 	Installs.progress.connect(_on_install_progress)
 	Session.authenticated.connect(func () -> void:
 		_show("home", {})
@@ -90,6 +94,8 @@ func _show(page: String, extra: Dictionary) -> void:
 			_user(str(extra.get("username", "")))
 		"install":
 			_install(str(extra.get("uid", "")), str(extra.get("channel", "")))
+		"install_prompt":
+			_install_prompt(str(extra.get("uid", "")), str(extra.get("channel", "")))
 		"checkout":
 			_checkout(str(extra.get("uid", "")))
 		"play":
@@ -109,21 +115,56 @@ func _show(page: String, extra: Dictionary) -> void:
 func _on_login_url(url: String) -> void:
 	if url.is_empty():
 		return
-	_status.text = url
+	_status.text = "Continue in the browser"
 	_body.add_child(_line(url))
+	_login_link_actions(url)
+
+
+func _on_login_state(state: int, error: String) -> void:
+	if state == 4:
+		return
+	var text := Session.login_failure_text(state, error)
+	if text == "":
+		text = Session.login_error
+	_show("login", {})
+	if text != "":
+		_status.text = text
 
 
 func _login() -> void:
-	_status.text = "Sign in with your Blazium account"
+	_status.text = Session.login_heading()
+	if Session.login_error != "":
+		_body.add_child(_line(Session.login_error))
 	if Session.login_url != "":
 		_body.add_child(_line(Session.login_url))
+		_login_link_actions(Session.login_url)
 	var button := Button.new()
-	button.text = "Sign in"
+	button.text = "Try again" if Session.login_error != "" else "Sign in"
 	button.pressed.connect(func () -> void:
+		Session.login_error = ""
 		Session.start_login()
-		_status.text = Session.login_url if Session.login_url != "" else "Continue in the browser"
+		_status.text = "Continue in the browser" if Session.login_url != "" else "Waiting for the browser"
 	)
 	_body.add_child(button)
+
+
+func _login_link_actions(url: String) -> void:
+	var row := HBoxContainer.new()
+	var copy := Button.new()
+	copy.text = "Copy link"
+	copy.pressed.connect(func () -> void:
+		DisplayServer.clipboard_set(url)
+		_status.text = "Sign-in link copied"
+	)
+	var again := Button.new()
+	again.text = "Open again"
+	again.pressed.connect(func () -> void:
+		if not External.open(url):
+			_status.text = "No browser opened. Copy the link and open it yourself."
+	)
+	row.add_child(copy)
+	row.add_child(again)
+	_body.add_child(row)
 
 
 func _home() -> void:
@@ -170,8 +211,19 @@ func _library() -> void:
 	_status.text = "Library" if count == 0 else ("%d game update(s) available" % count)
 	Session.invalidate_library()
 	var body := Session.library()
+	var offline := Session.offline_notice()
+	if offline != "":
+		_status.text = offline
+		_action("Retry", func () -> void:
+			Session.invalidate_library()
+			Shell.show_page("library")
+		)
 	if not Session.ok(body) and body.has("error"):
 		_status.text = _err(body)
+		_action("Retry", func () -> void:
+			Session.invalidate_library()
+			Shell.show_page("library")
+		)
 		return
 	var seen := {}
 	for row in _rows(body, ["library", "games"]):
@@ -190,19 +242,25 @@ func _library() -> void:
 
 
 func _wallet() -> void:
+	Session.load_payment_options()
 	var body := Session.wallet()
-	_status.text = "Balance %s cents" % int(body.get("balance_cents", 0))
+	for row in Session.wallet_summary(body):
+		_body.add_child(_line(row))
+	_status.text = str(Session.wallet_summary(body)[0]) if Session.wallet_summary(body).size() > 0 else "Wallet"
 	var amount := SpinBox.new()
-	amount.min_value = 100
-	amount.max_value = 100000
+	amount.min_value = Session.top_up_min_cents()
+	amount.max_value = Session.top_up_max_cents()
 	amount.step = 100
-	amount.value = 1000
+	amount.value = mini(maxi(1000, Session.top_up_min_cents()), Session.top_up_max_cents())
 	_body.add_child(amount)
 	var button := Button.new()
 	button.text = "Add funds"
 	button.pressed.connect(func () -> void:
 		var cents := int(amount.value)
-		Confirm.ask("top_up", "Add funds?", "This opens the live Checkout page.", func () -> void:
+		if cents < Session.top_up_min_cents() or cents > Session.top_up_max_cents():
+			_status.text = Session.top_up_refusal()
+			return
+		Confirm.ask("top_up", "Add funds?", Session.card_checkout_text(cents), func () -> void:
 			_after_pay = {}
 			var created := Session.create_top_up(cents)
 			var url := str(created.get("checkout_url", ""))
@@ -306,10 +364,26 @@ func _install(uid: String, channel: String) -> void:
 		return
 	var file_uid := Installs.pick_file(uid, channel)
 	if file_uid.is_empty():
-		_status.text = "No download for this channel"
+		var listing := Session.files(uid)
+		_status.text = Installs.channel_missing_text(channel, listing.get("files", []), Installs.os_name())
 		return
 	var result: Dictionary = await Installs.install_file_with_progress(uid, file_uid)
-	_status.text = str(result.get("status", result.get("error", "Install failed")))
+	if result.has("error"):
+		_status.text = _err(result)
+	else:
+		_status.text = str(result.get("status", "Install failed"))
+
+
+func _install_prompt(uid: String, channel: String) -> void:
+	var title := Session.display_name(Session.game_title(uid), uid)
+	var chosen := channel.strip_edges().to_lower()
+	if chosen == "":
+		chosen = "stable"
+	_status.text = "Install %s (%s)?" % [title, chosen]
+	_body.add_child(_line("This downloads %s on the %s channel." % [title, chosen]))
+	_action("Install", func () -> void:
+		Shell.install_game(uid, channel)
+	)
 
 
 func _on_install_progress(game_uid: String, received: int, total: int) -> void:
@@ -340,7 +414,10 @@ func _play(uid: String) -> void:
 		)
 		_action("Launch", func () -> void:
 			var result := Installs.launch(uid)
-			_status.text = str(result.get("status", result.get("error", "")))
+			if result.has("error"):
+				_status.text = _err(result)
+			else:
+				_status.text = str(result.get("status", ""))
 		)
 		_action("Chat", func () -> void:
 			Shell.open_chat_game(uid)
@@ -425,6 +502,7 @@ func _tick_top_up() -> void:
 		var result := Session.purchase(game, str(_after_pay.get("kind", "purchase")), int(_after_pay.get("amount", 0)), int(_after_pay.get("total", 0)), str(_after_pay.get("idem", "")))
 		if Session.ok(result):
 			_after_pay["bought"] = true
+			Session.clear_purchase_key(game, str(_after_pay.get("kind", "purchase")), int(_after_pay.get("total", 0)))
 		else:
 			_status.text = _err(result)
 			_poll.stop()
@@ -433,10 +511,8 @@ func _tick_top_up() -> void:
 	var game_uid := str(_after_pay.get("game", ""))
 	var bought := bool(_after_pay.get("bought", false))
 	var settled := state == "paid" and (_after_pay.is_empty() or Session.owns(game_uid) or (str(_after_pay.get("kind", "")) == "donation" and bought))
-	if not settled and _polls > 40:
-		_poll.stop()
-		_poll_uid = ""
-		_status.text = "Payment did not finish"
+	if Session.top_up_poll_action(_polls, settled) == "wait":
+		_status.text = "Still waiting for payment"
 		return
 	if settled:
 		_poll.stop()
@@ -485,13 +561,15 @@ func _quote_actions(uid: String, kind: String, amount: int, title: String, detai
 	var scope := Session.purchase_scope(uid, kind, total)
 	_body.add_child(_line("Total %s" % _money(total)))
 	_action("Pay with balance", func () -> void:
-		Confirm.ask(kind, title, Session.purchase_confirm_text(total, detail), func () -> void:
+		var named := "%s. %s" % [Session.display_name(Session.game_title(uid), uid), detail]
+		Confirm.ask(kind, named, Session.purchase_confirm_text(total, named), func () -> void:
 			if not Session.begin_purchase(scope):
 				_status.text = "Payment already in progress"
 				return
 			var result := Session.purchase(uid, kind, price, total, key)
 			Session.end_purchase(scope)
 			if Session.ok(result):
+				Session.clear_purchase_key(uid, kind, total)
 				Session.invalidate_library()
 				if kind == "purchase" and Session.owns(uid):
 					Shell.show_page("library")
@@ -502,15 +580,18 @@ func _quote_actions(uid: String, kind: String, amount: int, title: String, detai
 		)
 	)
 	_action("Pay by card", func () -> void:
-		var balance := int(Session.wallet().get("balance_cents", 0))
-		var cents := Session.card_top_up_cents(total, balance)
+		Session.load_payment_options()
+		var wallet := Session.wallet()
+		var balance := int(wallet.get("available_cents", wallet.get("balance_cents", 0)))
+		var cents := Session.card_top_up_cents(total, balance, Session.top_up_max_cents(), Session.top_up_min_cents())
 		if cents < 0:
-			_status.text = "Card top-up cannot cover this total without leaving balance above the cap"
+			_status.text = Session.top_up_refusal()
 			return
 		if cents == 0:
 			_status.text = "Wallet balance already covers this total"
 			return
-		Confirm.ask("top_up", title, Session.purchase_confirm_text(total, "This opens the live Checkout page."), func () -> void:
+		var detail := "%s %s" % [Session.purchase_confirm_text(total, "This opens the live Checkout page."), Session.card_checkout_text(cents)]
+		Confirm.ask("top_up", title, detail, func () -> void:
 			var created := Session.create_top_up(cents)
 			var url := str(created.get("checkout_url", ""))
 			if url.is_empty():
@@ -623,21 +704,37 @@ func _owned_row(row: Dictionary) -> void:
 	var remove := Button.new()
 	remove.text = "Uninstall"
 	remove.pressed.connect(func () -> void:
-		Installs.uninstall(uid)
-		Shell.show_page("library")
+		_confirm_uninstall(uid, name)
 	)
 	line.add_child(remove)
 	_body.add_child(line)
 
 
+func _confirm_uninstall(uid: String, name: String) -> void:
+	if Installs.install_in_progress(uid):
+		_status.text = "Wait for the install to finish"
+		return
+	var running := Installs.is_running(uid)
+	Confirm.ask("uninstall", "Uninstall?", Installs.uninstall_prompt(name, running), func () -> void:
+		var result := Installs.uninstall(uid, true)
+		if not bool(result.get("ok", false)):
+			_status.text = _err(result)
+			return
+		Shell.show_page("library")
+	)
+
+
 func _revoked_row(uid: String) -> void:
+	var title := str(Installs.read_record(uid).get("title", ""))
+	if title == "":
+		title = Session.game_title(uid)
+	var name := Session.display_name(title, uid)
 	var line := HBoxContainer.new()
-	line.add_child(_line("%s — installed, license revoked" % uid))
+	line.add_child(_line("%s — installed, license revoked" % name))
 	var remove := Button.new()
 	remove.text = "Uninstall"
 	remove.pressed.connect(func () -> void:
-		Installs.uninstall(uid)
-		Shell.show_page("library")
+		_confirm_uninstall(uid, name)
 	)
 	line.add_child(remove)
 	_body.add_child(line)

@@ -14,48 +14,57 @@ var _procs: Dictionary = {}
 var _installing: Dictionary = {}
 var _cancel: Dictionary = {}
 var _http: HTTPRequest
+var _os_override: String = ""
+var _free_override: int = -1
+var _exec_marked: PackedStringArray = []
+var _extracted: PackedStringArray = []
 
 
 func _ready() -> void:
 	pass
 
 
-func _download(url: String, part: String, game_uid: String, paint: bool) -> Dictionary:
+func _download(url: String, part: String, game_uid: String, _paint: bool) -> Dictionary:
 	var opened := _open_download(url, part, game_uid)
 	if not bool(opened.get("ok", false)):
-		return {"code": 0, "error": str(opened.get("error", "Download failed (0)"))}
+		return {"code": 0, "error": str(opened.get("error", http_failure_text(0)))}
 	var client: HTTPClient = opened["client"]
+	var file: FileAccess = opened["file"]
 	var started := int(opened["started"])
 	var last := started
 	var ticks := 0
 	while client.get_status() == HTTPClient.STATUS_CONNECTING or client.get_status() == HTTPClient.STATUS_RESOLVING:
 		client.poll()
 		ticks += 1
-		if ticks > 1000 or download_stalled(started, last, Time.get_ticks_msec(), STALL_MS, OVERALL_MS) or _cancelled(game_uid):
+		var stop := _stop_reason(game_uid, started, last, Time.get_ticks_msec(), ticks > 1000)
+		if stop != "":
+			file.close()
 			client.close()
-			return _download_fail(part, "Download timed out")
-		if paint:
-			await get_tree().process_frame
-		else:
-			OS.delay_msec(10)
+			return _download_fail(part, stop)
+		await get_tree().process_frame
 	var err: Error = client.request(HTTPClient.METHOD_GET, str(opened.get("path", "/")), PackedStringArray())
 	if err != OK:
+		file.close()
 		client.close()
-		return _download_fail(part, "Download failed (0)")
+		return _download_fail(part, http_failure_text(0))
 	while client.get_status() == HTTPClient.STATUS_REQUESTING:
 		client.poll()
-		if download_stalled(started, last, Time.get_ticks_msec(), STALL_MS, OVERALL_MS) or _cancelled(game_uid):
+		var stop := _stop_reason(game_uid, started, last, Time.get_ticks_msec(), false)
+		if stop != "":
+			file.close()
 			client.close()
-			return _download_fail(part, "Download timed out")
-		if paint:
-			await get_tree().process_frame
-		else:
-			OS.delay_msec(10)
+			return _download_fail(part, stop)
+		await get_tree().process_frame
 	var total := _content_length(client.get_response_headers())
 	if total > MAX_DOWNLOAD_BYTES:
+		file.close()
 		client.close()
 		return _download_fail(part, "Download is too large")
-	var file: FileAccess = opened["file"]
+	var space_error := space_error_for(disk_free_bytes(part), total, part.get_base_dir())
+	if space_error != "":
+		file.close()
+		client.close()
+		return _download_fail(part, space_error)
 	var hasher: HashingContext = opened["hasher"]
 	var size := 0
 	while client.get_status() == HTTPClient.STATUS_BODY:
@@ -63,25 +72,22 @@ func _download(url: String, part: String, game_uid: String, paint: bool) -> Dict
 		var chunk := client.read_response_body_chunk()
 		var now := Time.get_ticks_msec()
 		if chunk.size() == 0:
-			if download_stalled(started, last, now, STALL_MS, OVERALL_MS) or _cancelled(game_uid):
+			var stop := _stop_reason(game_uid, started, last, now, false)
+			if stop != "":
 				file.close()
 				client.close()
-				return _download_fail(part, "Download timed out")
-			if paint:
-				await get_tree().process_frame
-			else:
-				OS.delay_msec(10)
+				return _download_fail(part, stop)
+			await get_tree().process_frame
 			continue
 		last = now
 		var taken := _take_chunk(file, hasher, size, chunk)
 		if not bool(taken.get("ok", false)):
 			file.close()
 			client.close()
-			return _download_fail(part, str(taken.get("error", "Could not write the file")))
+			return _download_fail(part, write_failure(part))
 		size = int(taken.get("size", size))
 		progress.emit(game_uid, size, total)
-		if paint:
-			await get_tree().process_frame
+		await get_tree().process_frame
 	return _finish_download(client, file, hasher, part, size)
 
 
@@ -123,8 +129,12 @@ func status(game_uid: String) -> String:
 	return "stopped"
 
 
-func uninstall(game_uid: String) -> void:
-	if is_running(game_uid):
+func uninstall(game_uid: String, close_running: bool = false) -> Dictionary:
+	if install_in_progress(game_uid):
+		return {"ok": false, "error": "Wait for the install to finish"}
+	if is_running(game_uid) and not close_running:
+		return {"ok": false, "error": "The game is running and will be closed", "running": true}
+	if is_running(game_uid) and close_running:
 		var pid := int(_procs[game_uid])
 		if pid > 0 and pid != OS.get_process_id() and OS.is_process_running(pid):
 			OS.kill(pid)
@@ -132,10 +142,11 @@ func uninstall(game_uid: String) -> void:
 	var overlay := _overlay_marker(game_uid)
 	if FileAccess.file_exists(overlay):
 		var target := FileAccess.get_file_as_string(overlay).strip_edges()
-		if _overlay_target_ok(target):
+		if _overlay_target_ok(target) and not _remove_manifest_files(game_uid, target):
 			_remove_dir(target)
 	_remove_dir(game_dir(game_uid))
 	changed.emit(game_uid)
+	return {"ok": true}
 
 
 func launch(game_uid: String) -> Dictionary:
@@ -152,41 +163,22 @@ func launch(game_uid: String) -> Dictionary:
 		return {"ok": false, "error": "Installed file is missing"}
 	var pid := OS.create_process(exe, [])
 	if pid <= 0:
-		return {"ok": false, "error": "Failed to start"}
+		return {"ok": false, "error": launch_failure_text(exe)}
 	_procs[game_uid] = pid
 	changed.emit(game_uid)
 	return {"ok": true, "status": "running", "pid": pid}
 
 
 func install_file(game_uid: String, file_uid: String) -> Dictionary:
-	return _install_now(game_uid, file_uid)
+	if is_running(game_uid):
+		return {"ok": false, "error": "This game is running"}
+	if install_in_progress(game_uid):
+		return {"ok": false, "error": "This game is already installing"}
+	return await install_file_with_progress(game_uid, file_uid)
 
 
 func install_file_with_progress(game_uid: String, file_uid: String) -> Dictionary:
 	return await _install_painted(game_uid, file_uid)
-
-
-func _install_now(game_uid: String, file_uid: String) -> Dictionary:
-	var claim := _claim_install(game_uid)
-	if not bool(claim.get("ok", false)):
-		return claim
-	var prepared := _prepare(game_uid, file_uid)
-	if not bool(prepared.get("ok", false)):
-		_release_install(game_uid)
-		return prepared
-	var part := str(prepared.get("dest", "")) + ".part"
-	var fetched: Dictionary = {}
-	for attempt in 3:
-		fetched = _download_now(str(prepared.get("url", "")), part, game_uid)
-		var code := int(fetched.get("code", 0))
-		if code >= 200 and code < 300:
-			break
-		DirAccess.remove_absolute(part)
-		if attempt < 2:
-			OS.delay_msec(retry_wait_ms(attempt))
-	var stored := _store(prepared, fetched)
-	_release_install(game_uid)
-	return stored
 
 
 func _install_painted(game_uid: String, file_uid: String) -> Dictionary:
@@ -201,12 +193,10 @@ func _install_painted(game_uid: String, file_uid: String) -> Dictionary:
 	var fetched: Dictionary = {}
 	for attempt in 3:
 		fetched = await _download(str(prepared.get("url", "")), part, game_uid, true)
-		var code := int(fetched.get("code", 0))
-		if code >= 200 and code < 300:
+		if bool(fetched.get("cancelled", false)) or not retry_after(fetched, attempt):
 			break
 		DirAccess.remove_absolute(part)
-		if attempt < 2:
-			await get_tree().create_timer(float(retry_wait_ms(attempt)) / 1000.0).timeout
+		await get_tree().create_timer(float(retry_wait_ms(attempt)) / 1000.0).timeout
 	var stored := _store(prepared, fetched)
 	_release_install(game_uid)
 	return stored
@@ -226,7 +216,7 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 		return {"ok": false, "error": "That file is not part of this game"}
 	var url := str(link.get("url", ""))
 	if url.is_empty():
-		return {"ok": false, "error": str(link.get("error", "No download url"))}
+		return {"ok": false, "error": Session.error_text(link) if link.has("error") else "No download url"}
 	if not bool(parse_download_url(url).get("ok", false)):
 		return {"ok": false, "error": "Download URL must be https"}
 	var filename := install_basename(str(link.get("filename", file_uid)))
@@ -249,6 +239,9 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 		var target := _overlay_dir(parent_uid, install_path)
 		if target == "":
 			return {"ok": false, "error": "The install path is not valid"}
+		var blocked := overlay_block_reason(parent_uid)
+		if blocked != "":
+			return {"ok": false, "error": blocked}
 		return {
 			"ok": true,
 			"url": url,
@@ -260,6 +253,8 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 			"file_uid": file_uid,
 			"build_id": str(row.get("build_id", "")),
 			"channel": channel,
+			"entry": str(link.get("entry", link.get("exe", ""))),
+			"title": str(listing.get("name", listing.get("title", ""))),
 		}
 	return {
 		"ok": true,
@@ -270,6 +265,8 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 		"file_uid": file_uid,
 		"build_id": str(row.get("build_id", "")),
 		"channel": channel,
+		"entry": str(link.get("entry", link.get("exe", ""))),
+		"title": str(listing.get("name", listing.get("title", ""))),
 	}
 
 
@@ -282,9 +279,15 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 	if not _path_in_game(game_uid, dest):
 		_discard_part(part)
 		return {"ok": false, "error": "The download filename is not valid"}
+	if bool(fetched.get("cancelled", false)):
+		_discard_part(part)
+		return {"ok": false, "cancelled": true, "error": "Install cancelled"}
 	if code < 200 or code >= 300:
 		_discard_part(part)
-		return {"ok": false, "error": "Download failed (%s)" % code}
+		var message := str(fetched.get("error", "")).strip_edges()
+		if message == "" or message.begins_with("Download failed"):
+			message = http_failure_text(code)
+		return {"ok": false, "error": message}
 	var want := checksum_hex(str(prepared.get("checksum", "")))
 	if want == "":
 		_discard_part(part)
@@ -296,94 +299,57 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 		size = int(fetched.get("size", -1))
 		if size < 0 or _file_length(part) != size:
 			_discard_part(part)
-			return {"ok": false, "error": "Could not write the file"}
+			return {"ok": false, "error": write_failure(dest)}
 	else:
 		got = _sha256_hex(body)
 		size = body.size()
 		part = dest + ".part"
 		if not _write_all(part, body):
 			_discard_part(part)
-			return {"ok": false, "error": "Could not write the file"}
+			return {"ok": false, "error": write_failure(dest)}
 	if got != want:
 		_discard_part(part)
 		return {"ok": false, "error": "The download checksum does not match"}
 	if not _commit_part(part, dest, size):
-		return {"ok": false, "error": "Could not write the file"}
+		return {"ok": false, "error": write_failure(dest)}
 	if bool(prepared.get("overlay", false)):
 		var target := str(prepared.get("overlay_dir", ""))
-		if not _extract_zip(dest, target):
+		if not _extract_zip(dest, target, MAX_UNCOMPRESSED, false):
 			DirAccess.remove_absolute(dest)
 			return {"ok": false, "error": "Could not extract the mod"}
 		DirAccess.remove_absolute(dest)
+		_write_manifest(game_uid, _extracted)
 		if not _write_text(_overlay_marker(game_uid), target) or not _write_text(_marker(game_uid), target):
 			return {"ok": false, "error": "Could not record the install"}
 		_write_record(game_uid, prepared, target)
 		changed.emit(game_uid)
 		progress.emit(game_uid, size, size)
 		return {"ok": true, "path": target, "status": "installed"}
-	if not _write_text(_marker(game_uid), dest):
+	var launch := dest
+	if _is_zip(dest):
+		var extract_dir := game_dir(game_uid).path_join("game")
+		if not _extract_zip(dest, extract_dir):
+			DirAccess.remove_absolute(dest)
+			return {"ok": false, "error": "Could not extract the game"}
+		var chosen := choose_launch_name(_extracted, str(prepared.get("entry", "")), os_name())
+		if chosen == "":
+			return {"ok": false, "error": "The archive has no launch file"}
+		launch = extract_dir.path_join(chosen)
+		mark_executable(launch, os_name())
+		DirAccess.remove_absolute(dest)
+	else:
+		mark_executable(launch, os_name())
+	if not _write_text(_marker(game_uid), launch):
 		return {"ok": false, "error": "Could not record the install"}
-	_write_record(game_uid, prepared, dest)
+	_write_record(game_uid, prepared, launch)
 	changed.emit(game_uid)
 	progress.emit(game_uid, size, size)
-	return {"ok": true, "path": dest, "status": "installed"}
-
-
-func _download_now(url: String, part: String, game_uid: String) -> Dictionary:
-	var opened := _open_download(url, part, game_uid)
-	if not bool(opened.get("ok", false)):
-		return {"code": 0, "error": str(opened.get("error", "Download failed (0)"))}
-	var client: HTTPClient = opened["client"]
-	var started := int(opened["started"])
-	var last := started
-	var ticks := 0
-	while client.get_status() == HTTPClient.STATUS_CONNECTING or client.get_status() == HTTPClient.STATUS_RESOLVING:
-		client.poll()
-		OS.delay_msec(10)
-		ticks += 1
-		if ticks > 1000 or download_stalled(started, last, Time.get_ticks_msec(), STALL_MS, OVERALL_MS) or _cancelled(game_uid):
-			client.close()
-			return _download_fail(part, "Download timed out")
-	var err: Error = client.request(HTTPClient.METHOD_GET, str(opened.get("path", "/")), PackedStringArray())
-	if err != OK:
-		client.close()
-		return _download_fail(part, "Download failed (0)")
-	while client.get_status() == HTTPClient.STATUS_REQUESTING:
-		client.poll()
-		OS.delay_msec(10)
-		if download_stalled(started, last, Time.get_ticks_msec(), STALL_MS, OVERALL_MS) or _cancelled(game_uid):
-			client.close()
-			return _download_fail(part, "Download timed out")
-	var total := _content_length(client.get_response_headers())
-	if total > MAX_DOWNLOAD_BYTES:
-		client.close()
-		return _download_fail(part, "Download is too large")
-	var file: FileAccess = opened["file"]
-	var hasher: HashingContext = opened["hasher"]
-	var size := 0
-	while client.get_status() == HTTPClient.STATUS_BODY:
-		client.poll()
-		var chunk := client.read_response_body_chunk()
-		var now := Time.get_ticks_msec()
-		if chunk.size() == 0:
-			if download_stalled(started, last, now, STALL_MS, OVERALL_MS) or _cancelled(game_uid):
-				file.close()
-				client.close()
-				return _download_fail(part, "Download timed out")
-			OS.delay_msec(10)
-			continue
-		last = now
-		var taken := _take_chunk(file, hasher, size, chunk)
-		if not bool(taken.get("ok", false)):
-			file.close()
-			client.close()
-			return _download_fail(part, str(taken.get("error", "Could not write the file")))
-		size = int(taken.get("size", size))
-		progress.emit(game_uid, size, total)
-	return _finish_download(client, file, hasher, part, size)
+	return {"ok": true, "path": launch, "status": "installed"}
 
 
 func os_name() -> String:
+	if _os_override != "":
+		return _os_override
 	return "windows" if OS.get_name() == "Windows" else "linux"
 
 
@@ -547,6 +513,7 @@ func _write_record(game_uid: String, prepared: Dictionary, path: String) -> void
 		"build_id": str(prepared.get("build_id", "")),
 		"channel": channel,
 		"path": path,
+		"title": str(prepared.get("title", "")),
 	}
 	var out := FileAccess.open(record_path(game_uid), FileAccess.WRITE)
 	if out == null:
@@ -596,7 +563,8 @@ func _zip_entry_ok(name: String) -> bool:
 	return rel != ""
 
 
-func _extract_zip(zip_path: String, dest_dir: String, max_bytes: int = MAX_UNCOMPRESSED) -> bool:
+func _extract_zip(zip_path: String, dest_dir: String, max_bytes: int = MAX_UNCOMPRESSED, replace_dir: bool = true) -> bool:
+	_extracted = PackedStringArray()
 	var declared := zip_declared_sizes(zip_path)
 	if not bool(declared.get("ok", false)):
 		return false
@@ -648,9 +616,12 @@ func _extract_zip(zip_path: String, dest_dir: String, max_bytes: int = MAX_UNCOM
 		if write_err != OK or wrote != bytes.size():
 			failed = true
 			break
+		_extracted.append(rel)
 	reader.close()
-	if failed or not _swap_dir(temp, dest_dir):
+	var placed := _swap_dir(temp, dest_dir) if replace_dir else _merge_into(temp, dest_dir)
+	if failed or not placed:
 		_remove_dir(temp)
+		_extracted = PackedStringArray()
 		return false
 	return true
 
@@ -729,6 +700,157 @@ func retry_wait_ms(attempt: int) -> int:
 	return wait
 
 
+func retry_after(fetched: Dictionary, attempt: int) -> bool:
+	if bool(fetched.get("cancelled", false)):
+		return false
+	var code := int(fetched.get("code", 0))
+	if code >= 200 and code < 300:
+		return false
+	return attempt < 2
+
+
+func install_in_progress(game_uid: String = "") -> bool:
+	if game_uid == "":
+		return not _installing.is_empty()
+	return _installing.has(game_uid)
+
+
+func any_running() -> bool:
+	for game_uid in _procs.keys():
+		if is_running(str(game_uid)):
+			return true
+	return false
+
+
+func overlay_block_reason(parent_uid: String) -> String:
+	if parent_uid != "" and is_running(parent_uid):
+		return "The parent game is running"
+	return ""
+
+
+func launch_failure_text(exe: String) -> String:
+	return "Failed to start %s (the operating system did not start it)" % exe.get_file()
+
+
+func uninstall_prompt(name: String, running: bool) -> String:
+	var text := "Uninstall %s?" % name
+	if running:
+		text += " The game is running and will be closed."
+	return text
+
+
+func http_failure_text(code: int) -> String:
+	if code == 0:
+		return "The network is unreachable"
+	if code == 401:
+		return "Sign in again"
+	if code == 403:
+		return "You no longer own this game"
+	if code == 404 or code == 410:
+		return "This build was removed"
+	return "Download failed (%s)" % code
+
+
+func _stop_reason(game_uid: String, started: int, last: int, now: int, gave_up: bool) -> String:
+	if _cancelled(game_uid):
+		return "Install cancelled"
+	if gave_up or download_stalled(started, last, now, STALL_MS, OVERALL_MS):
+		return "Download timed out"
+	return ""
+
+
+func space_error_for(free_bytes: int, need: int, folder: String) -> String:
+	if need <= 0 or free_bytes < 0:
+		return ""
+	if free_bytes >= need:
+		return ""
+	return "Not enough free space in %s" % folder
+
+
+func disk_free_bytes(_path: String) -> int:
+	return _free_override
+
+
+func write_failure(path: String) -> String:
+	var folder := path.get_base_dir()
+	if folder == "":
+		folder = path
+	return "Could not write the file in %s. The disk may be full or the folder is not writable." % folder
+
+
+func should_mark_executable(host_os: String, path: String) -> bool:
+	if host_os != "linux":
+		return false
+	return path.strip_edges() != ""
+
+
+func mark_executable(path: String, host_os: String) -> void:
+	if not should_mark_executable(host_os, path):
+		return
+	_exec_marked.append(path)
+	if OS.get_name() == "Windows":
+		return
+	OS.execute("chmod", PackedStringArray(["+x", path]), [], true)
+
+
+func choose_launch_name(paths: PackedStringArray, hint: String, host_os: String) -> String:
+	var wanted := hint.replace("\\", "/").strip_edges()
+	if wanted != "":
+		for rel in paths:
+			var clean := str(rel).replace("\\", "/")
+			if clean == wanted or clean.get_file() == wanted.get_file():
+				return clean
+	var matches: Array = []
+	for rel in paths:
+		var clean := str(rel).replace("\\", "/")
+		if clean.find("/") >= 0:
+			continue
+		if _launch_candidate(clean, host_os):
+			matches.append(clean)
+	if matches.size() == 1:
+		return str(matches[0])
+	return ""
+
+
+func _launch_candidate(name: String, host_os: String) -> bool:
+	var base := name.get_file()
+	if host_os == "windows":
+		return base.to_lower().ends_with(".exe")
+	return base == "x86_64" or base.ends_with(".x86_64")
+
+
+func available_channels(rows: Variant, host_os: String) -> PackedStringArray:
+	var found: PackedStringArray = []
+	if not (rows is Array):
+		return found
+	for row in rows:
+		if not (row is Dictionary):
+			continue
+		if not bool(row.get("downloadable", false)):
+			continue
+		if str(row.get("os", "")).to_lower() != host_os:
+			continue
+		var channel := str(row.get("channel", "")).strip_edges().to_lower()
+		if channel == "" or found.has(channel):
+			continue
+		found.append(channel)
+	return found
+
+
+func channel_missing_text(channel: String, rows: Variant, host_os: String) -> String:
+	var asked := channel.strip_edges().to_lower()
+	if asked == "":
+		asked = "stable"
+	var have := available_channels(rows, host_os)
+	if have.is_empty():
+		return "No download for channel %s." % asked
+	return "No download for channel %s. Available: %s" % [asked, ", ".join(have)]
+
+
+func _is_zip(path: String) -> bool:
+	return bool(zip_declared_sizes(path).get("ok", false))
+
+
 func cancel_download(game_uid: String) -> void:
 	_cancel[game_uid] = true
 
@@ -769,12 +891,12 @@ func _open_download(url: String, part: String, _game_uid: String) -> Dictionary:
 	var client := HTTPClient.new()
 	var err := client.connect_to_host(str(target.get("host", "")), int(target.get("port", 443)), TLSOptions.client())
 	if err != OK:
-		return {"ok": false, "error": "Download failed (0)"}
+		return {"ok": false, "error": http_failure_text(0)}
 	DirAccess.make_dir_recursive_absolute(part.get_base_dir())
 	var file := FileAccess.open(part, FileAccess.WRITE)
 	if file == null:
 		client.close()
-		return {"ok": false, "error": "Could not write the file"}
+		return {"ok": false, "error": write_failure(part)}
 	var hasher := HashingContext.new()
 	hasher.start(HashingContext.HASH_SHA256)
 	return {
@@ -806,13 +928,16 @@ func _finish_download(client: HTTPClient, file: FileAccess, hasher: HashingConte
 	client.close()
 	if code < 200 or code >= 300 or err != OK or length != size:
 		_discard_part(part)
-		return {"code": code, "error": "Download failed (%s)" % code}
+		var message := write_failure(part) if err != OK or length != size else http_failure_text(code)
+		if code < 200 or code >= 300:
+			message = http_failure_text(code)
+		return {"code": code, "error": message}
 	return {"code": code, "sha256": digest, "size": size, "part": part}
 
 
 func _download_fail(part: String, message: String) -> Dictionary:
 	_discard_part(part)
-	return {"code": 0, "error": message}
+	return {"code": 0, "error": message, "cancelled": message == "Install cancelled"}
 
 
 func _write_all(path: String, body: PackedByteArray) -> bool:
@@ -869,6 +994,90 @@ func _file_length(path: String) -> int:
 func _discard_part(part: String) -> void:
 	if part != "" and FileAccess.file_exists(part):
 		DirAccess.remove_absolute(part)
+
+
+func _merge_into(temp: String, dest: String) -> bool:
+	if not DirAccess.dir_exists_absolute(temp):
+		return false
+	DirAccess.make_dir_recursive_absolute(dest)
+	if not _copy_tree(temp, dest):
+		return false
+	_remove_dir(temp)
+	return true
+
+
+func _copy_tree(src: String, dest: String) -> bool:
+	var dir := DirAccess.open(src)
+	if dir == null:
+		return false
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			var from := src.path_join(name)
+			var to := dest.path_join(name)
+			if dir.current_is_dir():
+				DirAccess.make_dir_recursive_absolute(to)
+				if not _copy_tree(from, to):
+					dir.list_dir_end()
+					return false
+			else:
+				if FileAccess.file_exists(to):
+					DirAccess.remove_absolute(to)
+				if DirAccess.copy_absolute(from, to) != OK:
+					dir.list_dir_end()
+					return false
+		name = dir.get_next()
+	dir.list_dir_end()
+	return true
+
+
+func _manifest_path(game_uid: String) -> String:
+	return game_dir(game_uid).path_join("installed.files")
+
+
+func _write_manifest(game_uid: String, files: PackedStringArray) -> void:
+	var out := FileAccess.open(_manifest_path(game_uid), FileAccess.WRITE)
+	if out == null:
+		return
+	var rows: Array = []
+	for rel in files:
+		rows.append(str(rel))
+	out.store_string(JSON.stringify(rows))
+	out.close()
+
+
+func _remove_manifest_files(game_uid: String, target: String) -> bool:
+	var path := _manifest_path(game_uid)
+	if not FileAccess.file_exists(path):
+		return false
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if not (parsed is Array):
+		return false
+	var root := _norm_path(target)
+	for rel in parsed:
+		var file := _norm_path(root.path_join(str(rel)))
+		if file == root or not file.begins_with(root + "/"):
+			continue
+		DirAccess.remove_absolute(file)
+	if _dir_empty(target):
+		_remove_dir(target)
+	return true
+
+
+func _dir_empty(path: String) -> bool:
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return true
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			dir.list_dir_end()
+			return false
+		name = dir.get_next()
+	dir.list_dir_end()
+	return true
 
 
 func _swap_dir(temp: String, dest: String) -> bool:

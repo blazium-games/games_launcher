@@ -10,6 +10,7 @@ var _title: Label
 var _body: Label
 var _pending_id: String = ""
 var _action: Callable = Callable()
+var _nonce: int = 0
 
 
 func _ready() -> void:
@@ -41,12 +42,23 @@ func _ready() -> void:
 
 
 func ask(id: String, title: String, body: String, action: Callable) -> Dictionary:
+	if _panel.visible and _pending_id != "":
+		return {"ok": false, "error": "Confirm or cancel the pending action first", "confirm_id": _pending_id}
+	_nonce += 1
 	_pending_id = id
 	_action = action
 	_title.text = title
 	_body.text = body
 	_panel.visible = true
-	return {"ok": false, "needs_confirm": true, "confirm_id": id}
+	return {"ok": false, "needs_confirm": true, "confirm_id": id, "nonce": _nonce}
+
+
+func pending_body() -> String:
+	return _body.text if _body != null else ""
+
+
+func is_pending() -> bool:
+	return _panel != null and _panel.visible and _pending_id != ""
 
 
 func _accept() -> void:

@@ -116,7 +116,7 @@ func _route(parsed: Dictionary) -> void:
 		"listing", "game":
 			Shell.show_listing(str(parsed.get("uid", "")), host == "game")
 		"install":
-			Shell.install_game(str(parsed.get("uid", "")), str(parsed.get("channel", "")))
+			Shell.confirm_install(str(parsed.get("uid", "")), str(parsed.get("channel", "")))
 		"buy":
 			Shell.show_checkout(str(parsed.get("uid", "")))
 		"play":
@@ -131,6 +131,12 @@ func _route(parsed: Dictionary) -> void:
 			Shell.open_chat_friend(str(parsed.get("username", "")))
 		"chat_game":
 			Shell.open_chat_game(str(parsed.get("uid", "")))
+
+
+func route_plan(parsed: Dictionary) -> String:
+	if str(parsed.get("host", "")) == "install":
+		return "install_prompt"
+	return str(parsed.get("host", ""))
 
 
 func valid_uid(value: String) -> bool:

@@ -13,7 +13,8 @@ func _run() -> void:
 	var installs: Node = root.get_node_or_null("Installs")
 	var single: Node = root.get_node_or_null("SingleInstance")
 	var session: Node = root.get_node_or_null("Session")
-	if updates == null or router == null or installs == null or single == null or session == null:
+	var external: Node = root.get_node_or_null("External")
+	if updates == null or router == null or installs == null or single == null or session == null or external == null:
 		push_error("autoload missing")
 		quit(1)
 		return
@@ -21,7 +22,7 @@ func _run() -> void:
 	_uri(router)
 	_channels(installs)
 	_checksums(installs)
-	_commands(single)
+	_commands(single, external)
 	_session(session)
 	if _failed:
 		quit(1)
@@ -160,7 +161,7 @@ func _checksums(installs: Node) -> void:
 	installs.uninstall(game)
 
 
-func _commands(single: Node) -> void:
+func _commands(single: Node, external: Node) -> void:
 	var empty: PackedStringArray = PackedStringArray()
 	check(single.command_message(empty) == "SHOW", "no args shows")
 	var link: PackedStringArray = PackedStringArray(["--flag", "blazium://library"])
@@ -171,10 +172,10 @@ func _commands(single: Node) -> void:
 	check(single.accept_command("secret", "secret SHOW") == "SHOW", "matching token shows")
 	check(single.accept_command("secret", "other SHOW") == "", "wrong token is ignored")
 	check(single.accept_command("secret", "SHOW") == "", "bare command is ignored")
-	check(External.allowed("https://blazium.games/login"), "service host opens")
-	check(External.allowed("blazium://library"), "blazium scheme opens")
-	check(not External.allowed("https://evil.example/login"), "other hosts stay closed")
-	check(not External.allowed("http://blazium.games/login"), "plain http stays closed")
+	check(external.allowed("https://blazium.games/login"), "service host opens")
+	check(external.allowed("blazium://library"), "blazium scheme opens")
+	check(not external.allowed("https://evil.example/login"), "other hosts stay closed")
+	check(not external.allowed("http://blazium.games/login"), "plain http stays closed")
 
 
 func _session(session: Node) -> void:

@@ -15,10 +15,14 @@ SKIP_KEYS = {
     "GITHUB_TOKEN", "GH_TOKEN",
 }
 EXTS = {".go", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".cpp", ".h", ".hpp", ".py", ".sh", ".yml", ".yaml"}
+FIRST_PARTY_VENDOR = (
+    ("github.com", "blazium-games"),
+    ("blazium.dev",),
+)
 PATTERNS = [
     re.compile(r'os\.Getenv\(\s*"([A-Z][A-Z0-9_]+)"'),
     re.compile(r'os\.LookupEnv\(\s*"([A-Z][A-Z0-9_]+)"'),
-    re.compile(r'env(?:Str|Int|Or)\(\s*"([A-Z][A-Z0-9_]+)"'),
+    re.compile(r'env(?:Str|Int|Bool|Or)\(\s*"([A-Z][A-Z0-9_]+)"'),
     re.compile(r'(?:config|commonconfig)\.Getenv\(\s*"([A-Z][A-Z0-9_]+)"'),
     re.compile(r'process\.env\.([A-Z][A-Z0-9_]+)'),
     re.compile(r'process\.env\["([A-Z][A-Z0-9_]+)"\]'),
@@ -28,6 +32,8 @@ PATTERNS = [
     re.compile(r'os\.getenv\(\s*"([A-Z][A-Z0-9_]+)"'),
     re.compile(r'const\s+\w*Env\s*=\s*"([A-Z][A-Z0-9_]+)"'),
     re.compile(r'(?m)^[ \t]*-[ \t]*key:[ \t]*([A-Z][A-Z0-9_]+)\s*$'),
+    re.compile(r'([A-Z][A-Z0-9_]+):\s*\$\{\{\s*secrets\.\1\s*\}\}'),
+    re.compile(r'secrets\.([A-Z][A-Z0-9_]+)'),
 ]
 
 
@@ -44,12 +50,24 @@ def example_keys(root: Path) -> set[str]:
     return keys
 
 
+def skip_path(path: Path) -> bool:
+    parts = path.parts
+    for i, part in enumerate(parts):
+        if part == "vendor":
+            rest = parts[i + 1 :]
+            allowed = any(tuple(rest[: len(prefix)]) == prefix for prefix in FIRST_PARTY_VENDOR)
+            return not allowed
+        if part in SKIP_DIRS:
+            return True
+    return False
+
+
 def code_keys(root: Path) -> set[str]:
     found = set()
     for p in root.rglob("*"):
         if not p.is_file() or p.suffix not in EXTS:
             continue
-        if any(part in SKIP_DIRS for part in p.parts):
+        if skip_path(p):
             continue
         if p.suffix in {".yml", ".yaml"} and ".github" not in p.parts and ".do" not in p.parts:
             continue

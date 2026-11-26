@@ -28,6 +28,12 @@ Library, friends, and game chat on `irc.blazium.online`. It does not replace a B
 
 Export templates are not in this repo. The installer is how you run it.
 
+CI builds the launcher only with the `blazium-games/games_module` release pinned in `ci/templates.lock.json`, and only when the editor and export template match the SHA-256 digests there. Without that file the export job stops. To pin a release you have vetted, download its editor and template assets and run:
+
+```bash
+python3 ci/templates_pin.py pin --tag <templates tag> --dir <download dir> <editor and template asset names>
+```
+
 ## License
 
 Licensed under the MIT License — see [LICENSE](LICENSE).

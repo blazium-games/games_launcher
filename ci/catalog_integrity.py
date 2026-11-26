@@ -1,21 +1,31 @@
 """Fail-closed checks for catalog downloads.
 
 The sha256 and the URL travel in the same manifest, so an empty hash, an
-off-host URL, a downgrade, or an unsigned Windows binary is rejected.
+off-host URL, a downgrade, or an unsigned Windows binary is rejected. A Linux
+binary must carry a detached OpenPGP signature that verifies under
+PINNED_LINUX_PUBKEY.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 ALLOWED_HOST = "cdn.blazium.app"
 PUBLISHER_SUBJECT = 'CN="Divine Games, inc."'
+MAX_SIGNATURE_BYTES = 64 * 1024
+
+# ASCII-armored OpenPGP public key that signs the Linux blazium-cli and
+# crash_reporter builds on cdn.blazium.app. It must live here, never in the
+# catalog or on the CDN. While it is empty every Linux download is rejected.
+PINNED_LINUX_PUBKEY = ""
 
 
 class IntegrityError(Exception):
@@ -110,7 +120,7 @@ def read_version_file(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def read_url(url: str, timeout: int = 180) -> bytes:
+def read_url(url: str, timeout: int = 180, limit: int = 0) -> bytes:
     if not pinned_url(url):
         raise IntegrityError("download_url is not on the pinned host")
     opener = urllib.request.build_opener(_PinnedRedirect)
@@ -120,7 +130,12 @@ def read_url(url: str, timeout: int = 180) -> bytes:
     )
     try:
         with opener.open(req, timeout=timeout) as resp:
-            return resp.read()
+            if limit <= 0:
+                return resp.read()
+            body = resp.read(limit + 1)
+            if len(body) > limit:
+                raise IntegrityError("response is larger than allowed")
+            return body
     except IntegrityError:
         raise
     except urllib.error.URLError as exc:
@@ -200,6 +215,95 @@ def authenticode_publisher_ok(data: bytes) -> bool:
             pass
 
 
+def _gpg(home: str, args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
+    exe = shutil.which("gpg")
+    if not exe:
+        raise IntegrityError("gpg is required to verify the Linux signature")
+    env = os.environ.copy()
+    env["GNUPGHOME"] = home
+    env["LC_ALL"] = "C"
+    try:
+        return subprocess.run(
+            [
+                exe,
+                "--homedir",
+                home,
+                "--batch",
+                "--no-tty",
+                "--no-options",
+                "--no-auto-key-locate",
+                "--no-auto-key-retrieve",
+                *args,
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise IntegrityError("gpg could not run") from exc
+
+
+def _fingerprints(colons: bytes) -> set[str]:
+    found: set[str] = set()
+    for line in colons.decode("utf-8", "replace").splitlines():
+        fields = line.split(":")
+        if fields[0] == "fpr" and len(fields) > 9 and fields[9]:
+            found.add(fields[9].upper())
+    return found
+
+
+def verify_detached_signature(data: bytes, signature: bytes, armored_key: str) -> None:
+    """Raise unless ``signature`` is a good signature of ``data`` by ``armored_key``."""
+    key = (armored_key or "").strip()
+    if not key:
+        raise IntegrityError("no pinned Linux signing key")
+    if not signature:
+        raise IntegrityError("detached signature is empty")
+    home = tempfile.mkdtemp(prefix="blazium-gpg-")
+    try:
+        os.chmod(home, 0o700)
+        key_path = os.path.join(home, "pinned.asc")
+        data_path = os.path.join(home, "payload")
+        sig_path = os.path.join(home, "payload.sig")
+        with open(key_path, "w", encoding="ascii") as handle:
+            handle.write(key + "\n")
+        imported = _gpg(home, ["--import", key_path])
+        if imported.returncode != 0:
+            raise IntegrityError("pinned Linux signing key could not be imported")
+        listed = _gpg(home, ["--with-colons", "--fingerprint", "--fingerprint", "--list-keys"])
+        trusted = _fingerprints(listed.stdout)
+        if listed.returncode != 0 or not trusted:
+            raise IntegrityError("pinned Linux signing key has no fingerprint")
+        with open(data_path, "wb") as handle:
+            handle.write(data)
+        with open(sig_path, "wb") as handle:
+            handle.write(signature)
+        proc = _gpg(home, ["--status-fd", "1", "--verify", sig_path, data_path])
+        good = False
+        signers: set[str] = set()
+        for line in proc.stdout.decode("utf-8", "replace").splitlines():
+            parts = line.split()
+            if len(parts) < 2 or parts[0] != "[GNUPG:]":
+                continue
+            status = parts[1]
+            if status in ("BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "NO_PUBKEY", "NODATA"):
+                raise IntegrityError("detached signature does not verify under the pinned key")
+            if status == "GOODSIG":
+                good = True
+            elif status == "VALIDSIG" and len(parts) >= 3:
+                signers.add(parts[2].upper())
+                if len(parts) >= 12:
+                    signers.add(parts[11].upper())
+        if proc.returncode != 0 or not good or not signers:
+            raise IntegrityError("detached signature does not verify under the pinned key")
+        if not signers <= trusted:
+            raise IntegrityError("detached signature is from a key other than the pinned key")
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def finalize_bytes(download: dict, sha: str, data: bytes) -> None:
     got = hashlib.sha256(data).hexdigest()
     if got != _sha256_hex(sha):
@@ -211,7 +315,12 @@ def finalize_bytes(download: dict, sha: str, data: bytes) -> None:
             raise IntegrityError("Authenticode publisher is not trusted")
         return
     if data.startswith(b"\x7fELF"):
-        if not pinned_url(str(download.get("sig_url") or "")):
+        sig_url = str(download.get("sig_url") or "")
+        if not pinned_url(sig_url):
             raise IntegrityError("detached signature is missing or not on the pinned host")
+        if not PINNED_LINUX_PUBKEY.strip():
+            raise IntegrityError("no pinned Linux signing key")
+        signature = read_url(sig_url, timeout=60, limit=MAX_SIGNATURE_BYTES)
+        verify_detached_signature(data, signature, PINNED_LINUX_PUBKEY)
         return
     raise IntegrityError("download is not a signed PE or ELF")

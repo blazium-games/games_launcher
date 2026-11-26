@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import socket
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -138,10 +142,39 @@ def test_elf_without_a_pinned_signature_is_rejected():
         finalize_bytes(download, download["sha256"], data)
 
 
-def test_elf_with_a_pinned_signature_url_is_accepted():
+def test_elf_with_a_pinned_signature_url_is_not_enough(monkeypatch):
+    """A sig_url on the pinned host is not a detached signature."""
     data = b"\x7fELF" + b"\x00" * 32
     digest = hashlib.sha256(data).hexdigest()
-    finalize_bytes(_entry(sha256=digest), digest, data)
+    download = _entry(sha256=digest)
+    sig_path = urllib.parse.urlparse(download["sig_url"]).path
+    bodies = {sig_path: b"not-a-signature"}
+
+    def open_catalog(self, fullurl, data=None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT):  # noqa: ANN001
+        url = fullurl.full_url if isinstance(fullurl, urllib.request.Request) else fullurl
+        path = urllib.parse.urlparse(url).path
+        if path not in bodies:
+            raise urllib.error.URLError(path)
+
+        class _Body:
+            def read(self, amt=-1):
+                return bodies[path]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        return _Body()
+
+    def blocked(*args, **kwargs):
+        raise OSError("outbound network is blocked")
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", open_catalog)
+    monkeypatch.setattr(socket, "create_connection", blocked)
+    with pytest.raises(IntegrityError):
+        finalize_bytes(download, digest, data)
 
 
 def test_hash_mismatch_is_rejected():

@@ -1,0 +1,12 @@
+{
+  "windows-amd64": {
+    "version": "0.1.19",
+    "url": "https://cdn.blazium.online/tools/chauffeur/windows-amd64/0.1.19/archive/default",
+    "sha256": "85730d98a7f56bb5382ddf4261a3c606bf1bd6f0f15b18508ac7460afca6120d"
+  },
+  "linux-amd64": {
+    "version": "0.1.19",
+    "url": "https://cdn.blazium.online/tools/chauffeur/linux-amd64/0.1.19/archive/default",
+    "sha256": "ee1740af8543882c847c66d2e1d189abedefbbb8e08fb1a80fa8cd1c803796df"
+  }
+}

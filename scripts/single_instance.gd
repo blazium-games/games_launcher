@@ -4,6 +4,7 @@ extends Node
 const PORT := 39219
 const HOST := "127.0.0.1"
 const TOKEN_PATH := "user://launcher_ipc.token"
+const OwnerOnlyFile := preload("res://scripts/owner_only_file.gd")
 
 var _server: TCPServer
 var _peers: Array[StreamPeerTCP] = []
@@ -71,16 +72,12 @@ func accept_command(token: String, msg: String) -> String:
 
 
 func _load_or_create_token() -> String:
-	if FileAccess.file_exists(TOKEN_PATH):
-		var existing := FileAccess.get_file_as_string(TOKEN_PATH).strip_edges()
-		if existing.length() >= 32:
-			return existing
+	var existing := OwnerOnlyFile.read(TOKEN_PATH).strip_edges()
+	if existing.length() >= 32:
+		return existing
 	var fresh := _random_token()
-	var file := FileAccess.open(TOKEN_PATH, FileAccess.WRITE)
-	if file == null:
+	if not OwnerOnlyFile.write(TOKEN_PATH, fresh):
 		return ""
-	file.store_string(fresh)
-	file.close()
 	return fresh
 
 
@@ -106,7 +103,7 @@ func _forward_and_quit() -> void:
 		OS.delay_msec(20)
 		ticks += 1
 	var msg := command_message(OS.get_cmdline_user_args() + OS.get_cmdline_args())
-	var token := FileAccess.get_file_as_string(TOKEN_PATH).strip_edges()
+	var token := OwnerOnlyFile.read(TOKEN_PATH).strip_edges()
 	if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED and not token.is_empty():
 		peer.put_data(("%s %s" % [token, msg]).to_utf8_buffer())
 	get_tree().quit(0)

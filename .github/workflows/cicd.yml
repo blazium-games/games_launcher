@@ -103,25 +103,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GAMES_MODULE_READ_TOKEN }}
         run: |
           set -euo pipefail
-          tag="$(gh release list --repo blazium-games/games_module --limit 30 --json tagName,isDraft --jq '.[] | select(.isDraft==false) | .tagName' | grep '^templates-' | head -n 1 || true)"
-          if [ -z "$tag" ]; then
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          else
+            PY=python
+          fi
+          # Only the release and digests in ci/templates.lock.json may build the launcher.
+          plan="$("$PY" ci/templates_pin.py plan --editor '${{ matrix.editor }}' --template '${{ matrix.template }}' --template-alt '${{ matrix.template_alt }}')"
+          if [ -z "$plan" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "No templates-* release on blazium-games/games_module. Skipping ${{ matrix.platform }}."
+            echo "ci/templates.lock.json pins no ${{ matrix.editor }} and template. Skipping ${{ matrix.platform }}."
             exit 0
           fi
-          echo "Using ${tag}"
-          mkdir -p .ci/host templates .ci/editor
-          gh release download "$tag" --repo blazium-games/games_module --dir .ci/host --clobber
-          editor="$(find .ci/host -type f \( -name '${{ matrix.editor }}' \) | head -n 1)"
-          template="$(find .ci/host -type f \( -name '${{ matrix.template }}' -o -name '${{ matrix.template_alt }}' \) | head -n 1)"
-          if [ -z "$editor" ] || [ -z "$template" ]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Release ${tag} has no ${{ matrix.editor }} or template for ${{ matrix.platform }}. Skipping this platform."
-            exit 0
-          fi
-          cp "$editor" ".ci/editor/${{ matrix.editor }}"
-          cp "$template" "templates/${{ matrix.template }}"
-          chmod +x ".ci/editor/${{ matrix.editor }}" "templates/${{ matrix.template }}" || true
+          mapfile -t assets <<< "$plan"
+          tag="${assets[0]}"
+          patterns=()
+          for name in "${assets[@]:1}"; do
+            patterns+=(--pattern "$name")
+          done
+          echo "Using pinned ${tag}"
+          rm -rf .ci/host .ci/editor
+          mkdir -p .ci/host
+          gh release download "$tag" --repo blazium-games/games_module --dir .ci/host --clobber "${patterns[@]}"
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Download chauffeur
@@ -129,11 +132,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p export .ci/chauffeur
-          curl -fsSL -o .ci/chauffeur/archive "https://cdn.blazium.online/tools/chauffeur/${{ matrix.chauffeur_platform }}/latest/archive/default"
-          python -c "import zipfile; zipfile.ZipFile(r'.ci/chauffeur/archive').extractall(r'.ci/chauffeur')"
-          test -f ".ci/chauffeur/${{ matrix.chauffeur_name }}"
-          cp ".ci/chauffeur/${{ matrix.chauffeur_name }}" "export/${{ matrix.chauffeur_name }}"
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          else
+            PY=python
+          fi
+          mkdir -p export
+          "$PY" ci/fetch_chauffeur.py --platform "${{ matrix.chauffeur_platform }}" --name "${{ matrix.chauffeur_name }}" --out "export/${{ matrix.chauffeur_name }}"
+          test -f "export/${{ matrix.chauffeur_name }}"
           printf '0.1.0\n' > export/VERSION
 
       - name: Download blazium-cli and crash reporter
@@ -159,16 +165,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p export
-          ".ci/editor/${{ matrix.editor }}" --headless --path . --export-release "${{ matrix.preset }}" "${{ matrix.out }}"
-          test -f "${{ matrix.out }}"
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            if command -v python3 >/dev/null 2>&1; then
-              python3 ci/redact_private_paths.py "${{ matrix.out }}"
-            else
-              python ci/redact_private_paths.py "${{ matrix.out }}"
-            fi
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          else
+            PY=python
           fi
+          mkdir -p export
+          # Verifies the editor and template against the lock, runs the verified bytes,
+          # and writes export/engine-provenance.json.
+          "$PY" ci/templates_pin.py export --host-dir .ci/host --platform '${{ matrix.platform }}' \
+            --editor '${{ matrix.editor }}' --template '${{ matrix.template }}' --template-alt '${{ matrix.template_alt }}' \
+            --preset '${{ matrix.preset }}' --out '${{ matrix.out }}'
+          test -f "${{ matrix.out }}"
 
       - uses: actions/upload-artifact@v4
         if: steps.host.outputs.ready == 'true'
@@ -190,6 +198,19 @@ jobs:
       - name: Inno Setup
         shell: powershell
         run: choco install innosetup -y --no-progress
+      - name: Verify templates export
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          else
+            PY=python
+          fi
+          "$PY" ci/templates_pin.py check-export --file export/BlaziumLauncher.exe \
+            --editor blazium.windows.editor.x86_64.exe \
+            --template blazium.windows.template_release.x86_64.exe \
+            --template-alt blazium.windows.template_release.x86_64.blazium.exe
       - name: Compile installer
         shell: powershell
         run: |
@@ -228,10 +249,27 @@ jobs:
           file_path: packaging/windows/Output/BlaziumLauncher-Setup-0.1.0.exe
           output_path: packaging/windows/Output
           environment_name: PROD
+      - name: Record templates provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          else
+            PY=python
+          fi
+          "$PY" ci/templates_pin.py record --file export/BlaziumLauncher.exe \
+            --editor blazium.windows.editor.x86_64.exe \
+            --template blazium.windows.template_release.x86_64.exe \
+            --template-alt blazium.windows.template_release.x86_64.blazium.exe \
+            --out packaging/windows/Output/engine-provenance-windows.json \
+            packaging/windows/Output/BlaziumLauncher-Setup-0.1.0.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: packaging/windows/Output/*.exe
+          path: |
+            packaging/windows/Output/*.exe
+            packaging/windows/Output/engine-provenance-windows.json
 
   package-linux:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -256,13 +294,26 @@ jobs:
           NFPM_ARCH: amd64
         run: |
           set -euo pipefail
+          python3 ci/templates_pin.py check-export --file export/BlaziumLauncher \
+            --editor blazium.linuxbsd.editor.x86_64 \
+            --template blazium.linuxbsd.template_release.x86_64 \
+            --template-alt blazium.linuxbsd.template_release.x86_64.blazium
           chmod +x export/BlaziumLauncher export/chauffeur export/blazium-cli export/crash_reporter packaging/linux/games.sh packaging/linux/postinst packaging/linux/postrm
-          curl -fsSL -o /tmp/nfpm.tar.gz https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz
-          tar -C /tmp -xzf /tmp/nfpm.tar.gz nfpm
+          # SHA-256 of nfpm_2.41.3_Linux_x86_64.tar.gz from the cosign-signed checksums.txt of nfpm v2.41.3.
+          # Change it together with the version in the URL. Release assets can be replaced under the same name.
+          nfpm_sha256=22aa6d3bc2ec239d62d3d190bcb036a47f2b24e0c3c6edfccebb6a55fbb2078e
+          nfpm_dir="$(mktemp -d)"
+          curl -fsSL -o "${nfpm_dir}/nfpm.tar.gz" https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz
+          if ! printf '%s  %s\n' "${nfpm_sha256}" "${nfpm_dir}/nfpm.tar.gz" | sha256sum --check --strict --status -; then
+            echo "nfpm archive does not match the pinned SHA-256. Refusing to run it." >&2
+            rm -rf "${nfpm_dir}"
+            exit 1
+          fi
+          tar --no-same-owner -C "${nfpm_dir}" -xzf "${nfpm_dir}/nfpm.tar.gz" nfpm
           mkdir -p dist
           cd packaging/linux
           envsubst '${SOURCE_DIR} ${VERSION} ${NFPM_ARCH}' < nfpm.yaml > nfpm.generated.yaml
-          /tmp/nfpm package --config nfpm.generated.yaml --packager deb --target "${GITHUB_WORKSPACE}/dist/blazium-games_${VERSION}_amd64.deb"
+          "${nfpm_dir}"/nfpm package --config nfpm.generated.yaml --packager deb --target "${GITHUB_WORKSPACE}/dist/blazium-games_${VERSION}_amd64.deb"
           cd "${GITHUB_WORKSPACE}"
           test -f "dist/blazium-games_${VERSION}_amd64.deb"
       - name: Sign deb when the key exists
@@ -278,6 +329,19 @@ jobs:
           umask 077
           printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
           gpg --detach-sign --armor "dist/blazium-games_0.1.0_amd64.deb"
+      - name: Record templates provenance
+        if: steps.linux-export.outcome == 'success'
+        run: |
+          set -euo pipefail
+          installers=(dist/blazium-games_0.1.0_amd64.deb)
+          if [ -f dist/blazium-games_0.1.0_amd64.deb.asc ]; then
+            installers+=(dist/blazium-games_0.1.0_amd64.deb.asc)
+          fi
+          python3 ci/templates_pin.py record --file export/BlaziumLauncher \
+            --editor blazium.linuxbsd.editor.x86_64 \
+            --template blazium.linuxbsd.template_release.x86_64 \
+            --template-alt blazium.linuxbsd.template_release.x86_64.blazium \
+            --out dist/engine-provenance-linux.json "${installers[@]}"
       - uses: actions/upload-artifact@v4
         if: steps.linux-export.outcome == 'success'
         with:
@@ -291,6 +355,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           pattern: "*-installer"
@@ -301,6 +366,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          python3 ci/templates_pin.py check-release --dist dist
           mapfile -t files < <(find dist -type f)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No installers were produced."

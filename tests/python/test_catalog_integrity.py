@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci"))
 
+import catalog_integrity  # noqa: E402
 from catalog_integrity import (  # noqa: E402
     IntegrityError,
     finalize_bytes,
@@ -138,10 +139,12 @@ def test_elf_without_a_pinned_signature_is_rejected():
         finalize_bytes(download, download["sha256"], data)
 
 
-def test_elf_with_a_pinned_signature_url_is_accepted():
+def test_elf_with_a_pinned_signature_url_needs_a_pinned_key(monkeypatch):
+    monkeypatch.setattr(catalog_integrity, "PINNED_LINUX_PUBKEY", "")
     data = b"\x7fELF" + b"\x00" * 32
     digest = hashlib.sha256(data).hexdigest()
-    finalize_bytes(_entry(sha256=digest), digest, data)
+    with pytest.raises(IntegrityError, match="pinned Linux signing key"):
+        finalize_bytes(_entry(sha256=digest), digest, data)
 
 
 def test_hash_mismatch_is_rejected():

@@ -129,11 +129,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p export .ci/chauffeur
-          curl -fsSL -o .ci/chauffeur/archive "https://cdn.blazium.online/tools/chauffeur/${{ matrix.chauffeur_platform }}/latest/archive/default"
-          python -c "import zipfile; zipfile.ZipFile(r'.ci/chauffeur/archive').extractall(r'.ci/chauffeur')"
-          test -f ".ci/chauffeur/${{ matrix.chauffeur_name }}"
-          cp ".ci/chauffeur/${{ matrix.chauffeur_name }}" "export/${{ matrix.chauffeur_name }}"
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          else
+            PY=python
+          fi
+          mkdir -p export
+          "$PY" ci/fetch_chauffeur.py --platform "${{ matrix.chauffeur_platform }}" --name "${{ matrix.chauffeur_name }}" --out "export/${{ matrix.chauffeur_name }}"
+          test -f "export/${{ matrix.chauffeur_name }}"
           printf '0.1.0\n' > export/VERSION
 
       - name: Download blazium-cli and crash reporter

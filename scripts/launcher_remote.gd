@@ -15,14 +15,11 @@ func _ready() -> void:
 		var text := str(arg)
 		if text == "--ensure-launcher-remote":
 			ensure_only = true
-		elif text.begins_with("--launcher-remote-path="):
-			config_path = text.substr("--launcher-remote-path=".length()).strip_edges()
 	call_deferred("_bootstrap")
 
 
 func _bootstrap() -> void:
-	if config_path.is_empty():
-		config_path = _user_path()
+	config_path = _user_path()
 	_ensure_file()
 	_apply_settings()
 	if ensure_only:

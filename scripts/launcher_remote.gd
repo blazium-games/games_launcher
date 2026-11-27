@@ -2,6 +2,7 @@ extends Node
 ## Loopback remote_control on port 39220. Own token in launcher_remote.json. Eval stays off.
 
 const DEFAULT_PORT := 39220
+const OwnerOnlyFile := preload("res://scripts/owner_only_file.gd")
 
 var host: String = "127.0.0.1"
 var port: int = DEFAULT_PORT
@@ -59,18 +60,20 @@ func register_user_scheme() -> void:
 
 
 func _valid(path: String) -> bool:
-	if not FileAccess.file_exists(path):
-		return false
-	var parsed = JSON.parse_string(FileAccess.get_file_as_string(path))
-	return parsed is Dictionary and not str(parsed.get("token", "")).is_empty()
+	var parsed = _read_owner_only(path)
+	return not str(parsed.get("token", "")).is_empty()
+
+
+func _read_owner_only(path: String) -> Dictionary:
+	var body := OwnerOnlyFile.read(path)
+	if body.strip_edges().is_empty():
+		return {}
+	var raw = JSON.parse_string(body)
+	return raw if raw is Dictionary else {}
 
 
 func _ensure_file() -> void:
-	var parsed = {}
-	if FileAccess.file_exists(config_path):
-		var raw = JSON.parse_string(FileAccess.get_file_as_string(config_path))
-		if raw is Dictionary:
-			parsed = raw
+	var parsed := _read_owner_only(config_path)
 	token = str(parsed.get("token", "")).strip_edges()
 	if token.is_empty():
 		token = _random_token()
@@ -83,11 +86,8 @@ func _ensure_file() -> void:
 		"executable": OS.get_executable_path(),
 		"created_unix": int(parsed.get("created_unix", Time.get_unix_time_from_system())),
 	}
-	DirAccess.make_dir_recursive_absolute(config_path.get_base_dir())
-	var f := FileAccess.open(config_path, FileAccess.WRITE)
-	if f != null:
-		f.store_string(JSON.stringify(payload, "\t"))
-		f.close()
+	if not OwnerOnlyFile.write(config_path, JSON.stringify(payload, "\t")):
+		push_warning("launcher_remote.json could not be written owner-only")
 
 
 func _random_token() -> String:

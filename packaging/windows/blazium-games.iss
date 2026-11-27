@@ -6,8 +6,9 @@
 ;
 ; /NOCLI does not register blazium://. That is how BlaziumHub installs this app
 ; without replacing its own handler.
-; /INSTALLHUB downloads BlaziumHub from https://cdn.blazium.app/hub/hub.json
-; unless /HUBSETUP points at a local setup.
+; /INSTALLHUB downloads BlaziumHub from https://cdn.blazium.app/hub/hub.json.
+; This setup runs elevated, so it only starts a hub setup that select_hub.ps1
+; downloaded into {tmp} and checked.
 
 #define MyAppName "BlaziumLauncher"
 #ifndef MyAppVersion
@@ -65,7 +66,6 @@ const
   ProtocolOwnerKey = 'SOFTWARE\BlaziumLauncher';
 
 var
-  HubSetup: String;
   SkipProtocol: Boolean;
   CliWasPresent: Boolean;
 
@@ -214,9 +214,7 @@ var
   Setup, Args, VersionPath, FloorPath: String;
   ResultCode: Integer;
 begin
-  Setup := HubSetup;
-  if (Setup = '') or not FileExists(Setup) then
-    Setup := HubSetupFromManifest;
+  Setup := HubSetupFromManifest;
   if (Setup = '') or not FileExists(Setup) then
   begin
     NotifyHubFailure('BlaziumHub setup was not found');
@@ -248,7 +246,6 @@ begin
   Result := True;
   SkipProtocol := False;
   CliWasPresent := CliAlreadyInstalled;
-  HubSetup := ExpandConstant('{param:HUBSETUP}');
   for I := 1 to ParamCount do
   begin
     Arg := Uppercase(ParamStr(I));
@@ -267,7 +264,7 @@ var
 begin
   if CurStep <> ssPostInstall then
     exit;
-  if WizardIsTaskSelected('installhub') or ((HubSetup <> '') and FileExists(HubSetup)) then
+  if WizardIsTaskSelected('installhub') then
     InstallHubNow;
   Already := SkipProtocol or CliWasPresent;
   if not RegQueryStringValue(HKLM, EnvironmentKey, 'BLAZIUM', Existing) then

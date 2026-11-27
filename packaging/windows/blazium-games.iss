@@ -55,7 +55,12 @@ Source: "{#MyAppSourceDir}\chauffeur.exe"; DestDir: "{autopf}\Blazium"; Flags: i
 Source: "{#MyAppSourceDir}\blazium-cli.exe"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 Source: "{#MyAppSourceDir}\blazium-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "games.cmd"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion uninsneveruninstall
-Source: "select_hub.ps1"; DestDir: "{app}"; Flags: ignoreversion
+; {app} can be any folder passed with /DIR. The elevated setup runs this script,
+; so it goes to {tmp}, which only administrators can write to.
+Source: "select_hub.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
+
+[InstallDelete]
+Type: files; Name: "{app}\select_hub.ps1"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -195,7 +200,7 @@ begin
   SetupPath := ExpandConstant('{tmp}\BlaziumHub-Setup.exe');
   VersionPath := ExpandConstant('{tmp}\hub.version');
   FloorPath := ExpandConstant('{autopf}\Blazium\hub.version');
-  ScriptPath := ExpandConstant('{app}\select_hub.ps1');
+  ScriptPath := ExpandConstant('{tmp}\select_hub.ps1');
   if not FileExists(ScriptPath) then
   begin
     Log('select_hub.ps1 is missing');

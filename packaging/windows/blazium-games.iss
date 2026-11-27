@@ -6,8 +6,9 @@
 ;
 ; /NOCLI does not register blazium://. That is how BlaziumHub installs this app
 ; without replacing its own handler.
-; /INSTALLHUB downloads BlaziumHub from https://cdn.blazium.app/hub/hub.json
-; unless /HUBSETUP points at a local setup.
+; /INSTALLHUB downloads BlaziumHub from https://cdn.blazium.app/hub/hub.json.
+; This setup runs elevated, so it only starts a hub setup that select_hub.ps1
+; downloaded into {tmp} and checked.
 
 #define MyAppName "BlaziumLauncher"
 #ifndef MyAppVersion
@@ -54,7 +55,12 @@ Source: "{#MyAppSourceDir}\chauffeur.exe"; DestDir: "{autopf}\Blazium"; Flags: i
 Source: "{#MyAppSourceDir}\blazium-cli.exe"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 Source: "{#MyAppSourceDir}\blazium-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "games.cmd"; DestDir: "{autopf}\Blazium"; Flags: ignoreversion uninsneveruninstall
-Source: "select_hub.ps1"; DestDir: "{app}"; Flags: ignoreversion
+; {app} can be any folder passed with /DIR. The elevated setup runs this script,
+; so it goes to {tmp}, which only administrators can write to.
+Source: "select_hub.ps1"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall
+
+[InstallDelete]
+Type: files; Name: "{app}\select_hub.ps1"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -65,7 +71,6 @@ const
   ProtocolOwnerKey = 'SOFTWARE\BlaziumLauncher';
 
 var
-  HubSetup: String;
   SkipProtocol: Boolean;
   CliWasPresent: Boolean;
 
@@ -195,7 +200,7 @@ begin
   SetupPath := ExpandConstant('{tmp}\BlaziumHub-Setup.exe');
   VersionPath := ExpandConstant('{tmp}\hub.version');
   FloorPath := ExpandConstant('{autopf}\Blazium\hub.version');
-  ScriptPath := ExpandConstant('{app}\select_hub.ps1');
+  ScriptPath := ExpandConstant('{tmp}\select_hub.ps1');
   if not FileExists(ScriptPath) then
   begin
     Log('select_hub.ps1 is missing');
@@ -214,9 +219,7 @@ var
   Setup, Args, VersionPath, FloorPath: String;
   ResultCode: Integer;
 begin
-  Setup := HubSetup;
-  if (Setup = '') or not FileExists(Setup) then
-    Setup := HubSetupFromManifest;
+  Setup := HubSetupFromManifest;
   if (Setup = '') or not FileExists(Setup) then
   begin
     NotifyHubFailure('BlaziumHub setup was not found');
@@ -248,7 +251,6 @@ begin
   Result := True;
   SkipProtocol := False;
   CliWasPresent := CliAlreadyInstalled;
-  HubSetup := ExpandConstant('{param:HUBSETUP}');
   for I := 1 to ParamCount do
   begin
     Arg := Uppercase(ParamStr(I));
@@ -267,7 +269,7 @@ var
 begin
   if CurStep <> ssPostInstall then
     exit;
-  if WizardIsTaskSelected('installhub') or ((HubSetup <> '') and FileExists(HubSetup)) then
+  if WizardIsTaskSelected('installhub') then
     InstallHubNow;
   Already := SkipProtocol or CliWasPresent;
   if not RegQueryStringValue(HKLM, EnvironmentKey, 'BLAZIUM', Existing) then

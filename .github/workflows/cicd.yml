@@ -257,12 +257,21 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x export/BlaziumLauncher export/chauffeur export/blazium-cli export/crash_reporter packaging/linux/games.sh packaging/linux/postinst packaging/linux/postrm
-          curl -fsSL -o /tmp/nfpm.tar.gz https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz
-          tar -C /tmp -xzf /tmp/nfpm.tar.gz nfpm
+          # SHA-256 of nfpm_2.41.3_Linux_x86_64.tar.gz from the cosign-signed checksums.txt of nfpm v2.41.3.
+          # Change it together with the version in the URL. Release assets can be replaced under the same name.
+          nfpm_sha256=22aa6d3bc2ec239d62d3d190bcb036a47f2b24e0c3c6edfccebb6a55fbb2078e
+          nfpm_dir="$(mktemp -d)"
+          curl -fsSL -o "${nfpm_dir}/nfpm.tar.gz" https://github.com/goreleaser/nfpm/releases/download/v2.41.3/nfpm_2.41.3_Linux_x86_64.tar.gz
+          if ! printf '%s  %s\n' "${nfpm_sha256}" "${nfpm_dir}/nfpm.tar.gz" | sha256sum --check --strict --status -; then
+            echo "nfpm archive does not match the pinned SHA-256. Refusing to run it." >&2
+            rm -rf "${nfpm_dir}"
+            exit 1
+          fi
+          tar --no-same-owner -C "${nfpm_dir}" -xzf "${nfpm_dir}/nfpm.tar.gz" nfpm
           mkdir -p dist
           cd packaging/linux
           envsubst '${SOURCE_DIR} ${VERSION} ${NFPM_ARCH}' < nfpm.yaml > nfpm.generated.yaml
-          /tmp/nfpm package --config nfpm.generated.yaml --packager deb --target "${GITHUB_WORKSPACE}/dist/blazium-games_${VERSION}_amd64.deb"
+          "${nfpm_dir}"/nfpm package --config nfpm.generated.yaml --packager deb --target "${GITHUB_WORKSPACE}/dist/blazium-games_${VERSION}_amd64.deb"
           cd "${GITHUB_WORKSPACE}"
           test -f "dist/blazium-games_${VERSION}_amd64.deb"
       - name: Sign deb when the key exists

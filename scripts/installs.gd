@@ -9,6 +9,7 @@ const STALL_MS := 20000
 const OVERALL_MS := 30 * 60 * 1000
 const MAX_DOWNLOAD_BYTES := 32 * 1024 * 1024 * 1024
 const MAX_UNCOMPRESSED := 512 * 1024 * 1024
+const MODS_DIR := "mods"
 
 var _procs: Dictionary = {}
 var _installing: Dictionary = {}
@@ -161,6 +162,12 @@ func launch(game_uid: String) -> Dictionary:
 		return {"ok": false, "error": "Installed file is outside the game folder"}
 	if exe.is_empty() or not FileAccess.file_exists(exe):
 		return {"ok": false, "error": "Installed file is missing"}
+	var record := read_record(game_uid)
+	var want := checksum_hex(str(record.get("launch_sha256", "")))
+	if want == "" or _norm_path(str(record.get("path", ""))) != _norm_path(exe):
+		return {"ok": false, "error": "Reinstall this game. Its launch file was not verified at install."}
+	if _file_sha256(exe) != want:
+		return {"ok": false, "error": "The launch file changed after install. Reinstall this game."}
 	var pid := OS.create_process(exe, [])
 	if pid <= 0:
 		return {"ok": false, "error": launch_failure_text(exe)}
@@ -223,22 +230,16 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 	var dest := install_dest(game_uid, filename)
 	if dest == "":
 		return {"ok": false, "error": "The download filename is not valid"}
-	var settings: Dictionary = listing.get("mod_settings", {}) if listing.get("mod_settings") is Dictionary else {}
-	var loader := str(settings.get("loader", "")).strip_edges()
-	var install_path := str(settings.get("install_path", "")).strip_edges()
 	var row := _file_row(listing, file_uid)
 	var channel := str(row.get("channel", "")).strip_edges().to_lower()
 	if channel == "" or not CHANNELS.has(channel):
 		channel = "stable"
+	var mod := mod_plan(listing)
+	if mod.has("error"):
+		return {"ok": false, "error": str(mod["error"])}
 	DirAccess.make_dir_recursive_absolute(game_dir(game_uid))
-	if loader != "" and install_path != "":
-		var parent: Dictionary = listing.get("parent", {}) if listing.get("parent") is Dictionary else {}
-		var parent_uid := str(parent.get("uid", ""))
-		if parent_uid == "" or not is_installed(parent_uid):
-			return {"ok": false, "error": "The parent game is not installed"}
-		var target := _overlay_dir(parent_uid, install_path)
-		if target == "":
-			return {"ok": false, "error": "The install path is not valid"}
+	if bool(mod.get("mod", false)):
+		var parent_uid := str(mod.get("parent_uid", ""))
 		var blocked := overlay_block_reason(parent_uid)
 		if blocked != "":
 			return {"ok": false, "error": blocked}
@@ -248,7 +249,8 @@ func _prepare(game_uid: String, file_uid: String) -> Dictionary:
 			"dest": dest,
 			"game_uid": game_uid,
 			"overlay": true,
-			"overlay_dir": target,
+			"overlay_dir": str(mod.get("target", "")),
+			"parent_uid": parent_uid,
 			"checksum": str(link.get("checksum", "")),
 			"file_uid": file_uid,
 			"build_id": str(row.get("build_id", "")),
@@ -314,6 +316,9 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 		return {"ok": false, "error": write_failure(dest)}
 	if bool(prepared.get("overlay", false)):
 		var target := str(prepared.get("overlay_dir", ""))
+		if not _mod_target_ok(str(prepared.get("parent_uid", "")), target):
+			DirAccess.remove_absolute(dest)
+			return {"ok": false, "error": "The install path is not valid"}
 		if not _extract_zip(dest, target, MAX_UNCOMPRESSED, false):
 			DirAccess.remove_absolute(dest)
 			return {"ok": false, "error": "Could not extract the mod"}
@@ -326,6 +331,7 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 		progress.emit(game_uid, size, size)
 		return {"ok": true, "path": target, "status": "installed"}
 	var launch := dest
+	var launch_sha := got
 	if _is_zip(dest):
 		var extract_dir := game_dir(game_uid).path_join("game")
 		if not _extract_zip(dest, extract_dir):
@@ -337,11 +343,13 @@ func _store(prepared: Dictionary, fetched: Dictionary) -> Dictionary:
 		launch = extract_dir.path_join(chosen)
 		mark_executable(launch, os_name())
 		DirAccess.remove_absolute(dest)
+		launch_sha = _file_sha256(launch)
 	else:
 		mark_executable(launch, os_name())
-	if not _write_text(_marker(game_uid), launch):
+	if launch_sha == "":
 		return {"ok": false, "error": "Could not record the install"}
-	_write_record(game_uid, prepared, launch)
+	if not _write_record(game_uid, prepared, launch, launch_sha) or not _write_text(_marker(game_uid), launch):
+		return {"ok": false, "error": "Could not record the install"}
 	changed.emit(game_uid)
 	progress.emit(game_uid, size, size)
 	return {"ok": true, "path": launch, "status": "installed"}
@@ -494,6 +502,24 @@ func _sha256_hex(body: PackedByteArray) -> String:
 	return ctx.finish().hex_encode().to_lower()
 
 
+func _file_sha256(path: String) -> String:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return ""
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	while file.get_position() < file.get_length():
+		var chunk := file.get_buffer(1024 * 1024)
+		if chunk.is_empty():
+			break
+		ctx.update(chunk)
+	var err := file.get_error()
+	file.close()
+	if err != OK and err != ERR_FILE_EOF:
+		return ""
+	return ctx.finish().hex_encode().to_lower()
+
+
 func _file_row(listing: Dictionary, file_uid: String) -> Dictionary:
 	var rows = listing.get("files", [])
 	if not (rows is Array):
@@ -504,7 +530,7 @@ func _file_row(listing: Dictionary, file_uid: String) -> Dictionary:
 	return {}
 
 
-func _write_record(game_uid: String, prepared: Dictionary, path: String) -> void:
+func _write_record(game_uid: String, prepared: Dictionary, path: String, launch_sha256: String = "") -> bool:
 	var channel := str(prepared.get("channel", "")).strip_edges().to_lower()
 	if not CHANNELS.has(channel):
 		channel = "stable"
@@ -515,11 +541,9 @@ func _write_record(game_uid: String, prepared: Dictionary, path: String) -> void
 		"path": path,
 		"title": str(prepared.get("title", "")),
 	}
-	var out := FileAccess.open(record_path(game_uid), FileAccess.WRITE)
-	if out == null:
-		return
-	out.store_string(JSON.stringify(record))
-	out.close()
+	if launch_sha256 != "":
+		record["launch_sha256"] = launch_sha256
+	return _write_text(record_path(game_uid), JSON.stringify(record))
 
 
 func _marker(game_uid: String) -> String:
@@ -530,21 +554,59 @@ func _overlay_marker(game_uid: String) -> String:
 	return game_dir(game_uid).path_join("installed.overlay")
 
 
+func mods_dir(parent_uid: String) -> String:
+	return game_dir(parent_uid).path_join(MODS_DIR)
+
+
+## Where a listing with a loader and install path would extract. Empty when the
+## listing is not a mod; carries "error" when it is a mod that cannot install.
+func mod_plan(listing: Dictionary) -> Dictionary:
+	var settings: Dictionary = listing.get("mod_settings", {}) if listing.get("mod_settings") is Dictionary else {}
+	var loader := str(settings.get("loader", "")).strip_edges()
+	var install_path := str(settings.get("install_path", "")).strip_edges()
+	if loader == "" or install_path == "":
+		return {}
+	var parent: Dictionary = listing.get("parent", {}) if listing.get("parent") is Dictionary else {}
+	var parent_uid := str(parent.get("uid", "")).strip_edges()
+	if parent_uid == "" or not is_installed(parent_uid):
+		return {"mod": true, "parent_uid": parent_uid, "error": "The parent game is not installed"}
+	var target := _overlay_dir(parent_uid, install_path)
+	if target == "":
+		return {"mod": true, "parent_uid": parent_uid, "error": "The install path is not valid"}
+	return {"mod": true, "parent_uid": parent_uid, "target": target}
+
+
 func _overlay_dir(parent_uid: String, install_path: String) -> String:
 	var clean := install_path.replace("\\", "/").strip_edges()
 	if clean == "" or clean.begins_with("/") or clean.contains("..") or clean.contains(":"):
 		return ""
 	var parts := clean.split("/", false)
+	if parts.is_empty() or parts[0] != MODS_DIR:
+		return ""
 	var rel := ""
 	for part in parts:
 		if part == "" or part == "." or part == "..":
 			return ""
 		rel = part if rel == "" else rel.path_join(part)
-	var root := game_dir(parent_uid).simplify_path()
-	var target := root.path_join(rel).simplify_path()
-	if target == root or not target.begins_with(root + "/"):
+	var target := _norm_path(game_dir(parent_uid).path_join(rel))
+	if not _mod_target_ok(parent_uid, target):
 		return ""
 	return target
+
+
+## Mods only ever write inside the parent's mods folder, and never into a folder
+## that holds the parent's recorded launch file.
+func _mod_target_ok(parent_uid: String, target: String) -> bool:
+	if parent_uid == "" or target == "":
+		return false
+	var mods := _norm_path(mods_dir(parent_uid))
+	var clean := _norm_path(target)
+	if clean != mods and not clean.begins_with(mods + "/"):
+		return false
+	var launch := _norm_path(FileAccess.get_file_as_string(_marker(parent_uid)).strip_edges())
+	if launch == "":
+		return true
+	return launch != mods and not launch.begins_with(mods + "/")
 
 
 func _overlay_target_ok(target: String) -> bool:

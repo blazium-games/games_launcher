@@ -37,6 +37,7 @@ ASSETS = {
 SCRIPTS = [
     "res://tests/mod_install.gd",
     "res://tests/behavior.gd",
+    "res://tests/mod_launch_overwrite.gd",
 ]
 
 

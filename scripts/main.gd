@@ -381,6 +381,15 @@ func _install_prompt(uid: String, channel: String) -> void:
 		chosen = "stable"
 	_status.text = "Install %s (%s)?" % [title, chosen]
 	_body.add_child(_line("This downloads %s on the %s channel." % [title, chosen]))
+	var mod := Installs.mod_plan(Session.files(uid))
+	if bool(mod.get("mod", false)):
+		var parent_uid := str(mod.get("parent_uid", ""))
+		var parent_title := Session.display_name(Session.game_title(parent_uid), parent_uid)
+		_body.add_child(_line("This is a mod for %s (%s)." % [parent_title, parent_uid]))
+		if mod.has("error"):
+			_body.add_child(_line(str(mod["error"])))
+			return
+		_body.add_child(_line("It adds files to %s" % str(mod.get("target", ""))))
 	_action("Install", func () -> void:
 		Shell.install_game(uid, channel)
 	)
